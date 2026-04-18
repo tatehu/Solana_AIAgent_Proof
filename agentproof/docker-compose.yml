@@ -1,0 +1,58 @@
+version: "3.8"
+
+services:
+  witness-1:
+    build:
+      context: ./witness-node
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HELIUS_RPC_URL=${HELIUS_RPC_URL}
+      - WITNESS_PRIVATE_KEY=${WITNESS_1_PRIVATE_KEY}
+      - AGENTPROOF_PROGRAM_ID=${AGENTPROOF_PROGRAM_ID}
+    restart: always
+
+  witness-2:
+    build:
+      context: ./witness-node
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3001"
+    environment:
+      - PORT=3001
+      - HELIUS_RPC_URL=${HELIUS_RPC_URL}
+      - WITNESS_PRIVATE_KEY=${WITNESS_2_PRIVATE_KEY}
+      - AGENTPROOF_PROGRAM_ID=${AGENTPROOF_PROGRAM_ID}
+    restart: always
+
+  witness-3:
+    build:
+      context: ./witness-node
+      dockerfile: Dockerfile
+    ports:
+      - "3003:3001"
+    environment:
+      - PORT=3001
+      - HELIUS_RPC_URL=${HELIUS_RPC_URL}
+      - WITNESS_PRIVATE_KEY=${WITNESS_3_PRIVATE_KEY}
+      - AGENTPROOF_PROGRAM_ID=${AGENTPROOF_PROGRAM_ID}
+    restart: always
+
+  risk-monitor:
+    build:
+      context: ./risk-monitor
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - HELIUS_RPC_URL=${HELIUS_RPC_URL}
+      - RISK_MONITOR_PRIVATE_KEY=${RISK_MONITOR_PRIVATE_KEY}
+      - AGENTPROOF_PROGRAM_ID=${AGENTPROOF_PROGRAM_ID}
+      - PROOF_ENGINE_URL=http://witness-1:3001
+      - FREEZE_THRESHOLD=80
+      - PORT=8000
+    restart: always
+    depends_on:
+      - witness-1

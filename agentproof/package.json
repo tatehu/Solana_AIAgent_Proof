@@ -1,0 +1,30 @@
+{
+  "name": "agentproof",
+  "version": "0.1.0",
+  "description": "AgentProof - Verifiable AI Agent Behavior Oracle on Solana",
+  "scripts": {
+    "build": "anchor build",
+    "test": "anchor test",
+    "deploy:devnet": "anchor deploy --provider.cluster devnet",
+    "witness:dev": "cd witness-node && npm run dev",
+    "risk:dev": "cd risk-monitor && python main.py",
+    "frontend:dev": "cd app && npm run dev",
+    "seed": "tsx scripts/seed-demo.ts"
+  },
+  "workspaces": [
+    "witness-node",
+    "app",
+    "sdk"
+  ],
+  "devDependencies": {
+    "@coral-xyz/anchor": "^0.30.0",
+    "@solana/web3.js": "^1.91.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.0.0",
+    "chai": "^4.3.4",
+    "mocha": "^10.4.0",
+    "ts-mocha": "^10.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
