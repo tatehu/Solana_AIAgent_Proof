@@ -186,7 +186,18 @@ export default function VerifyPage() {
         PROGRAM_ID
       );
 
-      // Step 3: build and send submit_proof transaction
+      // Step 3: pre-check that agentRecord exists (prevents cryptic simulation errors)
+      setStep("Checking agent registration...");
+      const agentAccountInfo = await connection.getAccountInfo(agentRecordPda);
+      if (!agentAccountInfo) {
+        setChainProof({
+          txSig: "",
+          status: "error",
+          error: "Your wallet is not registered as an agent — go to List Agent first.",
+        });
+        // Still proceed to off-chain witness verification
+      } else {
+      // Step 4: build and send submit_proof transaction
       setStep("Submitting proof on-chain...");
       const ixData = await buildSubmitProofIxData(
         taskIdBytes,
@@ -230,8 +241,9 @@ export default function VerifyPage() {
         setChainProof({ txSig: "", status: "error", error: friendlyMsg });
         // Continue to witness node for off-chain verification anyway
       }
+      } // end else (agent registered)
 
-      // Step 4: call witness node HTTP API for off-chain verification + trigger chain signing
+      // Step 5: call witness node HTTP API for off-chain verification + trigger chain signing
       setStep("Sending to witness node...");
       const proof = await agentProof.verifyProof({
         task_id: taskId,
