@@ -78,10 +78,9 @@ pub fn handler(
         ctx.accounts.agent_record.update_ewma(100, &clock);
 
         // Settle escrow if present
-        if let (Some(escrow), Some(agent_wallet), Some(_user_wallet)) = (
+        if let (Some(escrow), Some(agent_wallet)) = (
             ctx.accounts.task_escrow.as_mut(),
             ctx.accounts.agent_wallet.as_ref(),
-            ctx.accounts.user_wallet.as_ref(),
         ) {
             require!(escrow.status == 0, AgentProofError::TaskAlreadySettled);
             let amount = escrow.amount_lamports;
@@ -115,9 +114,8 @@ pub fn handler(
         ctx.accounts.agent_record.update_ewma(0, &clock);
 
         // Refund escrow if present
-        if let (Some(escrow), Some(_agent_wallet), Some(user_wallet)) = (
+        if let (Some(escrow), Some(user_wallet)) = (
             ctx.accounts.task_escrow.as_mut(),
-            ctx.accounts.agent_wallet.as_ref(),
             ctx.accounts.user_wallet.as_ref(),
         ) {
             require!(escrow.status == 0, AgentProofError::TaskAlreadySettled);
