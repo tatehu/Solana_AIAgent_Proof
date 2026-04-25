@@ -3,9 +3,16 @@ import os
 import struct
 import hashlib
 import logging
+import base64
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_rpc_host(url: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(url).hostname or "<rpc>"
+
 
 # Anchor discriminator for freeze_agent: sha256("global:freeze_agent")[:8]
 def _discriminator(name: str) -> bytes:
@@ -68,12 +75,19 @@ class ChainFreezer:
 
         async with httpx.AsyncClient() as client:
             # Get recent blockhash
-            blockhash_resp = await client.post(self.rpc_url, json={
-                "jsonrpc": "2.0", "id": 1,
-                "method": "getLatestBlockhash",
-                "params": [{"commitment": "confirmed"}],
-            })
-            blockhash = blockhash_resp.json()["result"]["value"]["blockhash"]
+            try:
+                blockhash_resp = await client.post(self.rpc_url, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "getLatestBlockhash",
+                    "params": [{"commitment": "confirmed"}],
+                })
+            except Exception as http_err:
+                raise RuntimeError(f"RPC connection failed ({_safe_rpc_host(self.rpc_url)}): {type(http_err).__name__}") from None
+
+            bh_data = blockhash_resp.json()
+            if "error" in bh_data:
+                raise RuntimeError(f"getLatestBlockhash error: {bh_data['error']}")
+            blockhash = bh_data["result"]["value"]["blockhash"]
 
             from solders.hash import Hash
             msg = Message.new_with_blockhash(
@@ -81,14 +95,17 @@ class ChainFreezer:
             )
             tx = Transaction([keypair], msg, Hash.from_string(blockhash))
 
-            send_resp = await client.post(self.rpc_url, json={
-                "jsonrpc": "2.0", "id": 2,
-                "method": "sendTransaction",
-                "params": [
-                    tx.to_bytes().hex(),
-                    {"encoding": "base16", "skipPreflight": False},
-                ],
-            })
+            try:
+                send_resp = await client.post(self.rpc_url, json={
+                    "jsonrpc": "2.0", "id": 2,
+                    "method": "sendTransaction",
+                    "params": [
+                        base64.b64encode(tx.to_bytes()).decode(),
+                        {"encoding": "base64", "skipPreflight": False},
+                    ],
+                })
+            except Exception as http_err:
+                raise RuntimeError(f"RPC connection failed ({_safe_rpc_host(self.rpc_url)}): {type(http_err).__name__}") from None
             result = send_resp.json()
 
             if "error" in result:

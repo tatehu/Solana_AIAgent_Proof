@@ -229,16 +229,23 @@ async def analyze_and_maybe_freeze(agent_id: str) -> None:
                 f"🚨 FREEZE TRIGGERED {agent_id} score={score.score:.1f} reasons={score.reasons}"
             )
             freeze_api_url = os.getenv("PROOF_ENGINE_URL", "http://localhost:3001")
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    f"{freeze_api_url}/api/v1/freeze",
-                    json={
-                        "agent_id": agent_id,
-                        "reason": "; ".join(score.reasons),
-                        "risk_score": score.score,
-                    },
-                    timeout=aiohttp.ClientTimeout(total=10),
-                )
+            try:
+                async with aiohttp.ClientSession() as session:
+                    resp = await session.post(
+                        f"{freeze_api_url}/api/v1/freeze",
+                        json={
+                            "agent_id": agent_id,
+                            "reason": "; ".join(score.reasons),
+                            "risk_score": score.score,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    )
+                    if resp.status >= 400:
+                        logger.error(f"Freeze API returned {resp.status} for {agent_id}")
+            except aiohttp.ClientError as e:
+                logger.error(f"Freeze API unreachable for {agent_id}: {type(e).__name__}")
+            except Exception as e:
+                logger.error(f"Freeze API call failed for {agent_id}: {type(e).__name__}")
             try:
                 freezer = get_freezer()
                 tx_sig = await freezer.freeze_on_chain(agent_id, f"Risk score {score.score:.1f}")
