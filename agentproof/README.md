@@ -3,7 +3,7 @@
 > Solana 上第一个可信 AI Agent 行为验证协议
 > Colosseum Frontier 2026 参赛项目
 
-**让链上合约能够知道一个 AI Agent 是否真正执行了它声称完成的任务。**
+**让链上合约能够知道一个 AI Agent 是否真正执行了它声称完成的任务——并在出问题之前就识别出恶意 Agent。**
 
 ---
 
@@ -13,38 +13,51 @@ Solana 承载全球 70% 的 AI Agent 链上活动，但整个 Agent 经济存在
 
 > 当一个 AI Agent 声称「我已完成了这个任务」，链上合约无法验证这是否是真的。
 
-AgentProof 为每一个 AI Agent 行为颁发链上可验证的「行为证书」，信任根基是 **Solana 公共账本**，而非任何中心化节点。
+AgentProof 构建了完整的 AI Agent 全生命周期信任协议：
+
+- **注册审计**：Agent 注册时，自动拉取其历史链上交易，用 Claude Opus 生成初始信用评分（0-100）
+- **任务托管**：用户锁 SOL 到链上 Escrow，任务完成才释放，拒绝才退款
+- **行为验证**：3 个见证节点独立验证链上事实，2-of-3 阈值签名后自动结算
+- **意图审查**：Claude Haiku 在验证时实时判断 Agent 行为是否与声明能力一致
+- **EWMA 信用**：每次任务结果通过指数加权移动平均更新链上信用分
+- **风险熔断**：AI 风控实时监控异常行为，触发阈值时直接提交 freeze_agent 上链
 
 ---
 
 ## 系统架构
 
 ```
-AI Agent 执行任务
+用户锁 SOL → TaskEscrow PDA
     ↓
-构建证据包（input_hash + TxSig + output_hash）
+Agent 执行任务，提交证据包（tx_signature + input_hash + output_hash）
     ↓
-3 个见证节点独立验证链上事实（getTransaction RPC）
+见证节点：
+  1. ChainVerifier 验证链上事实（Helius getTransaction）
+  2. IntentVerifier（Claude Haiku）验证意图是否与 Capability Manifest 一致
     ↓
-2-of-3 阈值签名 → 链上程序结算
+2-of-3 阈值达成 → 自动结算 Escrow + 更新 EWMA 信用分
     ↓
-铸造 ProofNFT + 更新声誉 SBT + 释放报酬（x402）
+Risk Monitor 并行监控 → 异常触发 freeze_agent 上链
 ```
 
 ```
-┌─────────────────────────────────────────────┐
-│              AgentProof 系统                 │
-├─────────────────────────────────────────────┤
-│  AI Agent Layer                             │
-│  Agent A (委托) ← AgentProof → Agent B (执行)│
-├─────────────────────────────────────────────┤
-│  中间层                                      │
-│  Proof Engine (Node.js)  Risk Monitor (AI)  │
-│           ↕ Helius WebSocket ↕              │
-├─────────────────────────────────────────────┤
-│  Solana Programs (Rust/Anchor)              │
-│  Agent Registry | Proof Settlement | SBT    │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                    AgentProof 系统                    │
+├──────────────────────────────────────────────────────┤
+│  AI Agent Layer                                      │
+│  Agent 注册（质押 + 声明能力）→ 执行任务 → 提交证明    │
+├──────────────────────────────────────────────────────┤
+│  中间服务层                                           │
+│  audit-engine (port 3002) │ witness-node (port 3001)  │
+│  Helius + Claude Opus     │ ChainVerifier + Claude Haiku │
+│  历史审计 + 信用评分        │ 实时验证 + 意图审查        │
+│                                                      │
+│  risk-monitor (port 8000)                            │
+│  5 种异常检测 + ChainFreezer → freeze_agent 上链     │
+├──────────────────────────────────────────────────────┤
+│  Solana Programs (Rust/Anchor)                       │
+│  AgentRecord │ TaskEscrow │ TaskProof │ WitnessPool   │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -55,43 +68,63 @@ AI Agent 执行任务
 agentproof/
 ├── programs/agentproof/       # Solana 链上程序（Rust/Anchor）
 │   └── src/
-│       ├── lib.rs             # 程序入口，6 个指令
-│       ├── errors.rs          # 自定义错误码
-│       ├── state/             # 账户数据结构
-│       │   ├── agent_record.rs
-│       │   ├── task_proof.rs
+│       ├── lib.rs             # 程序入口，7 个指令
+│       ├── errors.rs          # 17 个自定义错误码
+│       ├── state/
+│       │   ├── agent_record.rs    # EWMA 信用分 + 安全指数
+│       │   ├── task_escrow.rs     # SOL 托管账户（NEW）
+│       │   ├── task_proof.rs      # 任务证明账户
 │       │   └── witness_pool.rs
-│       └── instructions/      # 指令处理函数
+│       └── instructions/
+│           ├── create_task.rs         # 锁 SOL 到 Escrow（NEW）
 │           ├── register_agent.rs
 │           ├── submit_proof.rs
-│           ├── witness_sign.rs
+│           ├── witness_sign.rs        # 2-of-3 + 自动 Escrow 结算（UPDATED）
+│           ├── settle_task.rs         # TaskSettled 事件（NEW）
 │           ├── freeze_agent.rs
 │           ├── register_witness.rs
 │           └── initialize_witness_pool.rs
+├── audit-engine/              # 历史审计服务（Node.js/TypeScript）（NEW）
+│   └── src/
+│       ├── index.ts           # Express 入口，port 3002
+│       ├── helius-fetcher.ts  # 拉取历史 tx（getSignaturesForAddress）
+│       ├── tx-summarizer.ts   # 解析 tx → 结构化摘要
+│       ├── claude-auditor.ts  # Claude Opus 生成信用评分
+│       ├── manifest-store.ts  # Capability Manifest 内存存储
+│       └── routes.ts          # /audit + /manifest API
 ├── witness-node/              # 见证节点服务（Node.js/TypeScript）
 │   └── src/
-│       ├── index.ts           # 服务入口
-│       ├── verifier.ts        # 链上事实验证核心逻辑
-│       ├── signer.ts          # 见证签名管理
-│       └── api.ts             # REST API
+│       ├── index.ts
+│       ├── verifier.ts        # 链上事实验证（Helius RPC）
+│       ├── intent-verifier.ts # Claude Haiku 意图验证（NEW）
+│       ├── signer.ts          # 见证签名
+│       ├── chain-client.ts    # Solana 合约调用
+│       ├── types.ts           # IntentResult + VerifyResult（UPDATED）
+│       └── api.ts             # REST API（集成 IntentVerifier）（UPDATED）
 ├── risk-monitor/              # AI 风控服务（Python/FastAPI）
 │   ├── main.py
+│   ├── chain_freezer.py       # 提交 freeze_agent 上链（NEW）
+│   ├── chain_reader.py
 │   ├── models/
 │   │   ├── detectors.py       # 5 种异常检测器
-│   │   └── risk_model.py      # 风险评分聚合模型
-│   ├── api/routes.py
-│   └── scripts/simulate_malicious_agent.py
+│   │   └── risk_model.py      # 风险评分聚合
+│   └── api/routes.py          # 风控 API（集成 ChainFreezer）（UPDATED）
 ├── app/                       # Next.js 前端
 │   └── src/
-│       ├── app/               # 4 个页面
-│       ├── components/        # WalletProvider, Navigation
-│       └── lib/               # SDK + Solana 工具
-├── sdk/                       # Consumer SDK（npm 包）
+│       ├── app/
+│       │   ├── page.tsx           # 首页
+│       │   ├── register/page.tsx  # 注册 + 审计结果展示（UPDATED）
+│       │   ├── verify/page.tsx    # 验证 + 意图审查结果（UPDATED）
+│       │   ├── monitor/page.tsx   # 风控监控大盘
+│       │   └── agent/[pubkey]/    # Agent 详情（credit_score + safety_index）
+│       ├── components/
+│       └── lib/
+│           ├── agentproof-sdk.ts  # IntentResult 类型 + AgentRecord 反序列化（UPDATED）
+│           └── task-types.ts
 ├── tests/agentproof.ts        # Anchor 集成测试
 ├── scripts/
-│   ├── deploy.sh              # 一键 Devnet 部署
-│   └── seed-demo.ts           # Demo 数据初始化
-├── docker-compose.yml         # 3 节点集群编排
+│   ├── deploy.sh
+│   └── seed-demo.ts
 └── Anchor.toml
 ```
 
@@ -99,15 +132,15 @@ agentproof/
 
 ## 技术栈
 
-| 层级 | 技术 | 版本 |
+| 层级 | 技术 | 说明 |
 |------|------|------|
-| 链上程序 | Rust + Anchor | 0.30+ |
-| Token 标准 | Token-2022 + SBT 扩展 | - |
-| 支付集成 | x402 协议 | - |
-| RPC 层 | Helius WebSocket | - |
-| 见证节点 | Node.js + TypeScript | 20+ |
-| AI 风控 | Python + FastAPI + scikit-learn | 3.11+ |
-| 前端 | Next.js 14 + Phantom Wallet | 14 |
+| 链上程序 | Rust + Anchor 0.30 | 7 个指令，4 种 PDA |
+| 见证网络 | Node.js/TypeScript | ChainVerifier + Claude Haiku 意图验证 |
+| 历史审计 | Node.js/TypeScript + Claude Opus | Helius 拉取历史 tx，生成初始信用评分 |
+| AI 风控 | Python/FastAPI + scikit-learn | 5 种检测器，ChainFreezer 直接上链冻结 |
+| 前端 | Next.js 14 + Phantom Wallet | 4 个页面，展示审计/验证/风控全流程 |
+| RPC 层 | Helius API | 历史交易查询 + 实时事件监听 |
+| AI 模型 | Claude Opus（审计）/ Claude Haiku（意图） | 通过 ANTHROPIC_AUTH_TOKEN 代理接入 |
 
 ---
 
@@ -130,44 +163,56 @@ anchor --version  # >= 0.30.0
 solana config set --url https://api.devnet.solana.com
 solana airdrop 5
 
-# 一键部署（自动生成密钥、构建、部署）
+# 一键部署（自动构建、部署）
 bash scripts/deploy.sh
 ```
 
-### 2. 启动见证节点
+### 2. 启动历史审计引擎（audit-engine，port 3002）
+
+```bash
+cd audit-engine
+cp .env.example .env
+# 填写 HELIUS_API_KEY、ANTHROPIC_AUTH_TOKEN、ANTHROPIC_BASE_URL
+npm install
+npm run dev
+# → [audit-engine] listening on port 3002
+```
+
+### 3. 启动见证节点（witness-node，port 3001）
 
 ```bash
 cd witness-node
 cp .env.example .env
-# 填写 HELIUS_API_KEY 和 WITNESS_PRIVATE_KEY
+# 填写 HELIUS_RPC_URL、WITNESS_PRIVATE_KEY、ANTHROPIC_AUTH_TOKEN、AUDIT_ENGINE_URL
 npm install
 npm run dev
-# → 🔍 AgentProof Witness Node running on port 3001
+# → AgentProof Witness Node running on port 3001
 ```
 
-### 3. 启动 AI 风控服务
+### 4. 启动 AI 风控服务（risk-monitor，port 8000）
 
 ```bash
 cd risk-monitor
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# 填写 HELIUS_RPC_URL、RISK_MONITOR_AUTHORITY_KEY（用于提交 freeze_agent 上链）
 python main.py
-# → INFO: Uvicorn running on http://0.0.0.0:8000
+# → Uvicorn running on http://0.0.0.0:8000
 ```
 
-### 4. 启动前端
+### 5. 启动前端（port 3000）
 
 ```bash
 cd app
 npm install
 cp .env.local.example .env.local
-# 填写 HELIUS_API_KEY 和 AGENTPROOF_PROGRAM_ID
+# 填写 HELIUS_RPC_URL、AGENTPROOF_PROGRAM_ID
 npm run dev
 # → ready - http://localhost:3000
 ```
 
-### 5. 运行测试
+### 6. 运行测试
 
 ```bash
 anchor test
@@ -183,12 +228,25 @@ anchor test
 
 ## 环境变量
 
+### audit-engine/.env
+
+```env
+HELIUS_API_KEY=your_helius_api_key
+ANTHROPIC_AUTH_TOKEN=your_anthropic_token
+ANTHROPIC_BASE_URL=https://your-proxy-url    # 可选，不填则直连 Anthropic
+SOLANA_RPC_URL=https://devnet.helius-rpc.com/?api-key=your_helius_api_key
+PORT=3002
+```
+
 ### witness-node/.env
 
 ```env
 HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_KEY
 WITNESS_PRIVATE_KEY=YOUR_KEYPAIR_BASE58
-AGENTPROOF_PROGRAM_ID=YOUR_PROGRAM_ID
+AGENTPROOF_PROGRAM_ID=GdJFUktyh4SFxDfqeFE33KvXf5u6TMrDzmMs5Je2NKjG
+ANTHROPIC_AUTH_TOKEN=your_anthropic_token    # 用于 Claude Haiku 意图验证
+ANTHROPIC_BASE_URL=https://your-proxy-url    # 可选
+AUDIT_ENGINE_URL=http://localhost:3002        # Capability Manifest 查询
 PORT=3001
 ```
 
@@ -196,8 +254,9 @@ PORT=3001
 
 ```env
 HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_KEY
-RISK_MONITOR_PRIVATE_KEY=YOUR_KEYPAIR_BASE58
-AGENTPROOF_PROGRAM_ID=YOUR_PROGRAM_ID
+RISK_MONITOR_AUTHORITY_KEY=YOUR_KEYPAIR_BASE58   # 用于提交 freeze_agent 上链
+PROGRAM_ID=GdJFUktyh4SFxDfqeFE33KvXf5u6TMrDzmMs5Je2NKjG
+SOLANA_RPC_URL=https://api.devnet.solana.com
 PROOF_ENGINE_URL=http://localhost:3001
 FREEZE_THRESHOLD=80
 PORT=8000
@@ -208,67 +267,9 @@ PORT=8000
 ```env
 NEXT_PUBLIC_SOLANA_NETWORK=devnet
 NEXT_PUBLIC_HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_KEY
-NEXT_PUBLIC_AGENTPROOF_PROGRAM_ID=YOUR_PROGRAM_ID
+NEXT_PUBLIC_AGENTPROOF_PROGRAM_ID=GdJFUktyh4SFxDfqeFE33KvXf5u6TMrDzmMs5Je2NKjG
 NEXT_PUBLIC_WITNESS_NODE_URL=http://localhost:3001
 NEXT_PUBLIC_RISK_MONITOR_URL=http://localhost:8000
-```
-
----
-
-## API 文档
-
-### 见证节点 API（port 3001）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/health` | 健康检查 |
-| `POST` | `/api/v1/verify` | 提交验证请求 |
-| `GET` | `/api/v1/proof/:taskId` | 查询验证状态 |
-| `GET` | `/api/v1/agent/:pubkey` | 查询 Agent 信息 |
-| `POST` | `/api/v1/freeze` | 触发冻结（由风控调用） |
-
-### AI 风控 API（port 8000）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/health` | 健康检查 |
-| `POST` | `/api/v1/proof_event` | 上报任务证明事件 |
-| `POST` | `/api/v1/analyze` | 分析 Agent 风险评分 |
-| `GET` | `/api/v1/risk/:agent_id` | 获取缓存风险评分 |
-| `GET` | `/api/v1/alerts` | 获取高风险告警列表 |
-| `GET` | `/api/v1/agents` | 列出所有监控中的 Agent |
-| `GET` | `/metrics` | Prometheus 指标 |
-
----
-
-## SDK 使用
-
-```typescript
-import { createClient } from "@agentproof/sdk";
-
-const client = createClient({
-  rpcUrl: "https://devnet.helius-rpc.com/?api-key=YOUR_KEY",
-  programId: "YOUR_PROGRAM_ID",
-  witnessNodeUrl: "http://localhost:3001",
-  riskMonitorUrl: "http://localhost:8000",
-});
-
-// 验证 Agent 是否完成了 Swap 任务
-const proof = await client.verify({
-  agentId: "AgentXXX...",
-  taskType: "SOLANA_SWAP",
-  taskId: "task_001",
-  txSignature: "5xyz...",
-  expectedOutput: { tokenIn: "SOL", tokenOut: "USDC", minAmountOut: 95 },
-});
-
-if (proof.verified) {
-  await releasePayment(proof.taskId); // x402 自动释放报酬
-}
-
-// 查询 Agent 声誉（用于 DeFi 借款上限计算）
-const agent = await client.getAgent("AgentXXX...");
-const borrowLimit = agent.reputationScore * 10; // 847分 → $8,470 USDC
 ```
 
 ---
@@ -278,44 +279,131 @@ const borrowLimit = agent.reputationScore * 10; // 847分 → $8,470 USDC
 | 指令 | 说明 |
 |------|------|
 | `initialize_witness_pool` | 初始化见证节点池（管理员一次性操作） |
-| `register_agent` | Agent 注册 + 质押 SOL（最低 0.1 SOL） |
+| `register_agent` | Agent 注册 + 质押 SOL（最低 0.1 SOL），初始信用分由质押量决定 |
 | `register_witness` | 见证节点注册 + 质押 |
-| `submit_proof` | Agent 提交任务证据包 |
-| `witness_sign` | 见证节点签名（2-of-3 达成自动结算） |
-| `freeze_agent` | AI 风控触发冻结恶意 Agent |
+| `create_task` | 用户锁 SOL 到 TaskEscrow PDA，绑定 task_id 和 Agent |
+| `submit_proof` | Agent 提交任务证据包（tx_sig + input_hash + output_hash） |
+| `witness_sign` | 见证节点签名；2-of-3 后自动结算 Escrow，更新 EWMA 信用分 |
+| `freeze_agent` | AI 风控触发冻结（AgentRecord.is_frozen = true，永久链上记录） |
 
 ### PDA 设计
 
 ```
-AgentRecord:    seeds = [b"agent",        agent_pubkey]
-TaskProof:      seeds = [b"proof",        task_id]
-WitnessPool:    seeds = [b"witness_pool"]
-WitnessRecord:  seeds = [b"witness",      witness_pubkey]
-StakeVault:     seeds = [b"stake_vault",  agent_pubkey]
+AgentRecord:  seeds = [b"agent",        agent_pubkey]
+TaskEscrow:   seeds = [b"escrow",       task_id]       ← NEW
+TaskProof:    seeds = [b"proof",        task_id]
+WitnessPool:  seeds = [b"witness_pool"]
+WitnessRecord:seeds = [b"witness",      witness_pubkey]
+```
+
+### TaskEscrow 状态机
+
+```
+status = 0 (Locked)
+  → 2-of-3 见证通过 → status = 1 (Released)  → SOL 转给 Agent
+  → 2-of-3 见证拒绝 → status = 2 (Refunded)  → SOL 退给 User
+```
+
+### AgentRecord EWMA 信用分
+
+```
+新分数 = (旧分数 × 80 + 任务分 × 20) / 100
+
+任务分：通过 = 100，拒绝 = 0，意图不符 → 强制拒绝
+初始分：50（质押 ≥ 1 SOL → 55，质押 ≥ 5 SOL → 60）
 ```
 
 ---
 
-## 风控模型
+## API 文档
 
-风险评分由 5 个独立检测器组成，总分 100 分，超过 80 自动触发链上冻结：
+### audit-engine API（port 3002）
 
-| 检测器 | 检测内容 | 最高分 |
-|--------|----------|--------|
-| FailureRateDetector | 近 20 次任务失败率 > 50% | 40 |
-| ReplayAttackDetector | output_hash 重复提交（重放攻击） | 30 |
-| ATACreationDetector | 10 分钟内创建 > 20 个 ATA 账户 | 40 |
-| SOLDrainDetector | 5 分钟内 SOL 减少 > 2 | 30 |
-| OutputDriftDetector | 输出结果偏离历史分布 | 20 |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/audit` | 触发历史审计（拉取 Helius tx → Claude Opus 评分） |
+| `GET` | `/audit/:agent_pubkey` | 查询缓存审计结果 |
+| `POST` | `/manifest` | 上传 Capability Manifest（返回 SHA-256 hash） |
+| `GET` | `/manifest/:capability_hash` | 按 hash 查询 Manifest |
+| `GET` | `/manifest/pubkey/:agent_pubkey` | 按 Agent 公钥查询 Manifest |
+
+**POST /audit 请求体：**
+```json
+{
+  "agent_pubkey": "AgentXXX...",
+  "capability_manifest": {
+    "name": "ProfitQueen",
+    "goal": "SOL/USDC 套利，每笔目标收益 ≥ 2%",
+    "allowed_programs": ["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"]
+  }
+}
+```
+
+**POST /audit 响应：**
+```json
+{
+  "credit_score": 72,
+  "safety_index": 68,
+  "risk_flags": ["高频小额转账（可能是手续费套利）"],
+  "audit_summary": "该地址历史 234 笔交易，主要与 Jupiter 交互，未发现高风险行为。",
+  "tx_count": 234
+}
+```
+
+### witness-node API（port 3001）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/health` | 健康检查 |
+| `POST` | `/api/v1/verify` | 提交验证请求（含意图审查） |
+| `GET` | `/api/v1/proof/:taskId` | 查询验证状态 |
+| `GET` | `/api/v1/agent/:pubkey` | 查询 Agent 信息 |
+| `POST` | `/api/v1/freeze` | 触发冻结（由风控调用） |
+
+**POST /api/v1/verify 响应（含意图验证）：**
+```json
+{
+  "approved": true,
+  "signature_count": 2,
+  "intent_result": {
+    "aligned": true,
+    "confidence": 0.91,
+    "reason": "实际 swap 操作与声明的套利策略一致，收益率 2.3% 符合目标。",
+    "risk_flags": []
+  }
+}
+```
+
+### risk-monitor API（port 8000）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/health` | 健康检查 |
+| `POST` | `/api/v1/proof_event` | 上报任务证明事件 |
+| `POST` | `/api/v1/analyze` | 分析 Agent 风险评分 |
+| `GET` | `/api/v1/risk/:agent_id` | 获取缓存风险评分 |
+| `GET` | `/api/v1/alerts` | 高风险告警列表 |
+| `GET` | `/api/v1/agents` | 列出所有监控中的 Agent |
+| `GET` | `/metrics` | Prometheus 指标 |
 
 ---
 
 ## Demo 场景
 
-### 场景 1：正常任务验证
+### 场景 1：Agent 注册 + 历史审计
 
 ```bash
-# Agent B 完成 SOL→USDC Swap 后提交证明
+# 1. 连接 Phantom 钱包，进入 /register 页面
+# 2. 填写 Capability Manifest（Agent 能力声明）
+# 3. 质押 0.1 SOL 完成链上注册
+# 4. 页面自动调用 audit-engine 分析历史链上行为
+# 5. 展示：初始信用分 / 安全指数 / 风险标记 / 分析交易数量
+```
+
+### 场景 2：正常任务验证（含意图审查）
+
+```bash
+# Agent 完成 SOL→USDC Swap 后提交证明
 curl -X POST http://localhost:3001/api/v1/verify \
   -H 'Content-Type: application/json' \
   -d '{
@@ -325,36 +413,60 @@ curl -X POST http://localhost:3001/api/v1/verify \
     "tx_signature": "5xyzActualTxSig...",
     "input_hash": "abc123...",
     "output_hash": "def456...",
-    "instruction_hash": "ghi789...",
     "slot": 12345678
   }'
+
+# 返回：
+# {
+#   "approved": true,
+#   "intent_result": { "aligned": true, "confidence": 0.91, "reason": "..." }
+# }
 ```
 
-### 场景 2：模拟恶意 Agent 被冻结
+### 场景 3：意图不符 → 自动拒绝
 
 ```bash
-# 模拟攻击行为 → 风险分超过 80 → 自动冻结
+# Agent 声明只做 Jupiter Swap，实际却调用了高风险合约
+# IntentVerifier 返回 aligned: false
+# → verification.approved 强制设为 false
+# → Escrow 退款给用户，EWMA 信用分扣减
+```
+
+### 场景 4：恶意 Agent 被风控冻结
+
+```bash
+# 模拟高频失败 + 重放攻击，触发风险分 > 80
 cd risk-monitor
 python scripts/simulate_malicious_agent.py
-```
 
-### 场景 3：DeFi 协议集成 SDK
-
-```bash
-# 初始化演示数据
-HELIUS_RPC_URL=xxx AGENTPROOF_PROGRAM_ID=xxx tsx scripts/seed-demo.ts
+# risk-monitor 自动：
+# 1. 调用 witness-node /api/v1/freeze（HTTP 通知）
+# 2. 调用 ChainFreezer.freeze_on_chain()（提交 freeze_agent 指令上链）
+# 3. AgentRecord.is_frozen = true（链上永久记录，不可撤销）
 ```
 
 ---
 
-## 多节点部署
+## 风控模型
 
-```bash
-# 使用 Docker Compose 启动 3 节点见证集群 + 风控服务
-cp .env.example .env
-# 填写 HELIUS_RPC_URL、3 个 WITNESS_PRIVATE_KEY、RISK_MONITOR_PRIVATE_KEY
+风险评分由 5 个独立检测器组成（0-100分），超过 80 自动触发链上冻结：
 
-docker-compose up -d
+| 检测器 | 检测内容 | 最高分 |
+|--------|----------|--------|
+| FailureRateDetector | 近 20 次任务失败率 > 50% | 40 |
+| ReplayAttackDetector | output_hash 重复提交（重放攻击） | 30 |
+| ATACreationDetector | 10 分钟内创建 > 20 个 ATA 账户 | 40 |
+| SOLDrainDetector | 5 分钟内 SOL 减少 > 2 | 30 |
+| OutputDriftDetector | 输出结果偏离历史分布 | 20 |
+
+**冻结流程：**
+```
+风险分 > 80
+  → POST /api/v1/freeze（HTTP 通知 witness-node）
+  → ChainFreezer.freeze_on_chain(agent_pubkey, reason)
+      → Anchor discriminator + Borsh 编码
+      → getLatestBlockhash → sendTransaction（base64）
+      → AgentRecord.is_frozen = true
 ```
 
 ---
@@ -362,26 +474,18 @@ docker-compose up -d
 ## 健康检查
 
 ```bash
+curl http://localhost:3002/health
+# {"status":"ok","service":"audit-engine"}
+
 curl http://localhost:3001/health
 # {"status":"ok","witness_pubkey":"...","timestamp":...}
 
 curl http://localhost:8000/health
 # {"status":"ok","service":"AgentProof Risk Monitor","version":"0.1.0"}
 
-solana account YOUR_PROGRAM_ID --url devnet
+solana account GdJFUktyh4SFxDfqeFE33KvXf5u6TMrDzmMs5Je2NKjG --url devnet
 # executable: true
 ```
-
----
-
-## 开发周期
-
-| 周 | 任务 |
-|----|------|
-| 第 1 周 | Anchor 程序 + 基础测试 |
-| 第 2 周 | 见证节点 + AI 风控 |
-| 第 3 周 | 前端 + SDK + Demo 脚本 |
-| 第 3.5 周 | 联调 + 录制 Pitch 视频 |
 
 ---
 
@@ -390,7 +494,7 @@ solana account YOUR_PROGRAM_ID --url devnet
 | 收入来源 | 单价 |
 |----------|------|
 | 验证手续费 | 0.1% of task value |
-| DeFi 协议订阅（风险数据 API） | $500/协议/月 |
+| DeFi 协议订阅（风险数据 API）| $500/协议/月 |
 | 节点运营抽成 | 10% of 节点奖励 |
 
 **6 个月目标：ARR $78K → 12 个月目标：ARR $500K+**
