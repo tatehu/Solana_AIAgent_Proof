@@ -1,12 +1,17 @@
 import axios from "axios";
-import { WITNESS_NODE_URL, RISK_MONITOR_URL } from "./solana";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { WITNESS_NODE_URL, RISK_MONITOR_URL, PROGRAM_ID, RPC_URL } from "./solana";
 
 export interface AgentInfo {
   agent_pubkey: string;
-  reputation_score: number;
+  credit_score: number;
+  safety_index: number;
   tasks_completed: number;
+  tasks_failed: number;
   success_rate: number;
+  staked_lamports: number;
   is_frozen: boolean;
+  registered_at: number;
 }
 
 export interface ProofVerifyRequest {
@@ -88,8 +93,40 @@ class AgentProofSDK {
   }
 
   async listAgents(): Promise<AgentInfo[]> {
-    const response = await axios.get(`${RISK_MONITOR_URL}/api/v1/agents`);
-    return response.data.agents;
+    // AgentRecord discriminator: [4, 201, 129, 70, 197, 134, 47, 169]
+    const DISCRIMINATOR = Buffer.from([4, 201, 129, 70, 197, 134, 47, 169]);
+    const connection = new Connection(RPC_URL, "confirmed");
+
+    const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
+      filters: [{ memcmp: { offset: 0, bytes: DISCRIMINATOR.toString("base64"), encoding: "base64" } }],
+    });
+
+    return accounts.map(({ account }) => {
+      const data = account.data;
+      let offset = 8; // skip discriminator
+      const agent_pubkey = new PublicKey(data.slice(offset, offset + 32)).toBase58(); offset += 32;
+      offset += 32; // capability_hash
+      const staked_lamports = Number(data.readBigUInt64LE(offset)); offset += 8;
+      const credit_score = Number(data.readBigUInt64LE(offset)); offset += 8;
+      const safety_index = Number(data.readBigUInt64LE(offset)); offset += 8;
+      const tasks_completed = Number(data.readBigUInt64LE(offset)); offset += 8;
+      const tasks_failed = Number(data.readBigUInt64LE(offset)); offset += 8;
+      const success_rate_bps = data.readUInt16LE(offset); offset += 2;
+      const is_frozen = data[offset] === 1; offset += 1;
+      const registered_at = Number(data.readBigInt64LE(offset));
+
+      return {
+        agent_pubkey,
+        credit_score,
+        safety_index,
+        tasks_completed,
+        tasks_failed,
+        success_rate: success_rate_bps / 100,
+        staked_lamports,
+        is_frozen,
+        registered_at,
+      };
+    });
   }
 }
 

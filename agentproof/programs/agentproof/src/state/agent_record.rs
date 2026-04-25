@@ -26,6 +26,7 @@ impl AgentRecord {
 
     /// EWMA: new = 0.80 * old + 0.20 * task_score (integer arithmetic × 100)
     pub fn update_ewma(&mut self, task_score: u64, clock: &Clock) {
+        let task_score = task_score.min(100);
         self.credit_score = (self.credit_score * 80 + task_score * 20) / 100;
         self.last_active_at = clock.unix_timestamp;
 
