@@ -63,6 +63,13 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [existingAgent, setExistingAgent] = useState<{ credit_score: number; safety_index: number; staked_lamports: number; registered_at: number } | null>(null);
   const [checkingExisting, setCheckingExisting] = useState(false);
+  const [auditResult, setAuditResult] = useState<{
+    credit_score: number;
+    safety_index: number;
+    risk_flags: string[];
+    audit_summary: string;
+    tx_count: number;
+  } | null>(null);
 
   // 每次钱包切换时，检查该钱包是否已在链上注册过 Agent
   useEffect(() => {
@@ -142,6 +149,24 @@ export default function RegisterPage() {
 
       setTxSig(sig);
       setStatus("success");
+
+      // Try to fetch audit result from audit-engine
+      try {
+        const auditResponse = await fetch('http://localhost:3002/audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agent_pubkey: publicKey.toBase58(),
+            capability_manifest: manifest,
+          }),
+        });
+        if (auditResponse.ok) {
+          const auditData = await auditResponse.json();
+          setAuditResult(auditData);
+        }
+      } catch (auditErr) {
+        console.warn('Audit fetch failed (non-critical):', auditErr);
+      }
     } catch (e) {
       console.error("Register error:", e);
       const msg =
@@ -301,6 +326,32 @@ export default function RegisterPage() {
             >
               View on Solana Explorer →
             </a>
+          </div>
+        )}
+
+        {auditResult && (
+          <div className="mt-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
+            <h3 className="text-lg font-semibold text-white mb-3">历史审计结果</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <span className="text-gray-400 text-sm">初始信用分</span>
+                <div className="text-2xl font-bold text-green-400">{auditResult.credit_score}/100</div>
+              </div>
+              <div>
+                <span className="text-gray-400 text-sm">安全指数</span>
+                <div className="text-2xl font-bold text-blue-400">{auditResult.safety_index}/100</div>
+              </div>
+            </div>
+            {auditResult.risk_flags.length > 0 && (
+              <div className="mt-3">
+                <span className="text-yellow-400 text-sm">风险标记：</span>
+                <ul className="list-disc list-inside text-gray-300 text-sm mt-1">
+                  {auditResult.risk_flags.map((flag, i) => <li key={i}>{flag}</li>)}
+                </ul>
+              </div>
+            )}
+            <p className="text-gray-300 text-sm mt-3">{auditResult.audit_summary}</p>
+            <p className="text-gray-500 text-xs mt-2">分析了 {auditResult.tx_count} 笔历史交易</p>
           </div>
         )}
 
