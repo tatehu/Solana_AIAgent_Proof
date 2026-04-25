@@ -87,12 +87,15 @@ async function fetchAgentOnChain(pubkey: string): Promise<(AgentInfo & { capabil
   const info = await connection.getAccountInfo(pda);
   if (!info) return null;
   const d = info.data as unknown as Buffer;
+  // Old on-chain accounts (124 bytes) lack the safety_index field added later;
+  // new accounts (132 bytes) include it between credit_score and tasks_completed.
   let o = 8;
   const agent_pubkey = new PublicKey(d.slice(o, o + 32)).toBase58(); o += 32;
   const capability_hash = d.slice(o, o + 32).toString("hex"); o += 32;
   const staked_lamports = Number(d.readBigUInt64LE(o)); o += 8;
   const credit_score = Number(d.readBigUInt64LE(o)); o += 8;
-  const safety_index = Number(d.readBigUInt64LE(o)); o += 8;
+  let safety_index = 50;
+  if (d.length >= 132) { safety_index = Number(d.readBigUInt64LE(o)); o += 8; }
   const tasks_completed = Number(d.readBigUInt64LE(o)); o += 8;
   const tasks_failed = Number(d.readBigUInt64LE(o)); o += 8;
   const success_rate_bps = d.readUInt16LE(o); o += 2;

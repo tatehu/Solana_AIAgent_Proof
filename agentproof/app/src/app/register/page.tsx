@@ -93,7 +93,8 @@ export default function RegisterPage() {
           let offset = 8 + 32 + 32;
           const staked_lamports = Number(data.readBigUInt64LE(offset)); offset += 8;
           const credit_score = Number(data.readBigUInt64LE(offset)); offset += 8;
-          const safety_index = Number(data.readBigUInt64LE(offset)); offset += 8;
+          let safety_index = 50;
+          if ((data as Buffer).length >= 132) { safety_index = Number(data.readBigUInt64LE(offset)); offset += 8; }
           offset += 8 + 8 + 2 + 1; // tasks_completed, tasks_failed, success_rate_bps, is_frozen
           const registered_at = Number(data.readBigInt64LE(offset));
           setExistingAgent({ credit_score, safety_index, staked_lamports, registered_at });

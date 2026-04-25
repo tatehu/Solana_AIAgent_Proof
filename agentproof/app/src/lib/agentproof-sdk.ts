@@ -116,7 +116,8 @@ class AgentProofSDK {
       offset += 32; // capability_hash
       const staked_lamports = Number(data.readBigUInt64LE(offset)); offset += 8;
       const credit_score = Number(data.readBigUInt64LE(offset)); offset += 8;
-      const safety_index = Number(data.readBigUInt64LE(offset)); offset += 8;
+      let safety_index = 50;
+      if ((data as Buffer).length >= 132) { safety_index = Number(data.readBigUInt64LE(offset)); offset += 8; }
       const tasks_completed = Number(data.readBigUInt64LE(offset)); offset += 8;
       const tasks_failed = Number(data.readBigUInt64LE(offset)); offset += 8;
       const success_rate_bps = data.readUInt16LE(offset); offset += 2;
