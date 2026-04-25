@@ -29,12 +29,11 @@ pub mod agentproof {
     pub fn create_task(
         ctx: Context<CreateTask>,
         task_id: [u8; 32],
-        agent_pubkey: Pubkey,
         amount_lamports: u64,
         capability_hash: [u8; 32],
         deadline: i64,
     ) -> Result<()> {
-        instructions::create_task::handler(ctx, task_id, agent_pubkey, amount_lamports, capability_hash, deadline)
+        instructions::create_task::handler(ctx, task_id, amount_lamports, capability_hash, deadline)
     }
 
     /// 注册 Agent 身份，声明能力，质押 SOL

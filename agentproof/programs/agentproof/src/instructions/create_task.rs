@@ -32,7 +32,6 @@ pub struct CreateTask<'info> {
 pub fn handler(
     ctx: Context<CreateTask>,
     task_id: [u8; 32],
-    agent_pubkey: Pubkey,
     amount_lamports: u64,
     capability_hash: [u8; 32],
     deadline: i64,
@@ -59,7 +58,7 @@ pub fn handler(
     let escrow = &mut ctx.accounts.task_escrow;
     escrow.task_id = task_id;
     escrow.user = ctx.accounts.user.key();
-    escrow.agent = agent_pubkey;
+    escrow.agent = ctx.accounts.agent_record.agent_pubkey;
     escrow.amount_lamports = amount_lamports;
     escrow.capability_hash = capability_hash;
     escrow.deadline = deadline;
@@ -70,7 +69,7 @@ pub fn handler(
     emit!(TaskCreated {
         task_id,
         user: escrow.user,
-        agent: agent_pubkey,
+        agent: ctx.accounts.agent_record.agent_pubkey,
         amount_lamports,
     });
 
