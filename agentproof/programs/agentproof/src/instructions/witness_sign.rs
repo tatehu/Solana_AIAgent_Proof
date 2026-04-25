@@ -1,6 +1,6 @@
-// programs/agentproof/src/instructions/witness_sign.rs
+// agentproof/programs/agentproof/src/instructions/witness_sign.rs
 use anchor_lang::prelude::*;
-use crate::state::{AgentRecord, TaskProof};
+use crate::state::{AgentRecord, TaskEscrow, TaskProof};
 use crate::errors::AgentProofError;
 
 #[derive(Accounts)]
@@ -21,7 +21,24 @@ pub struct WitnessSign<'info> {
     )]
     pub agent_record: Account<'info, AgentRecord>,
 
-    /// 见证节点签名者
+    /// Optional: TaskEscrow for fund settlement (may not exist for all tasks)
+    #[account(
+        mut,
+        seeds = [b"escrow", task_id.as_ref()],
+        bump,
+    )]
+    pub task_escrow: Option<Account<'info, TaskEscrow>>,
+
+    /// Agent wallet to receive funds on approval
+    /// CHECK: destination wallet, verified against task_escrow.agent
+    #[account(mut)]
+    pub agent_wallet: Option<AccountInfo<'info>>,
+
+    /// User wallet to receive refund on rejection
+    /// CHECK: destination wallet, verified against task_escrow.user
+    #[account(mut)]
+    pub user_wallet: Option<AccountInfo<'info>>,
+
     pub witness: Signer<'info>,
 
     pub system_program: Program<'info, System>,
@@ -37,13 +54,11 @@ pub fn handler(
     let proof = &mut ctx.accounts.task_proof;
     let witness_key = ctx.accounts.witness.key();
 
-    // 找到该见证节点在列表中的位置
     let witness_idx = proof.witnesses
         .iter()
         .position(|w| *w == witness_key)
         .ok_or(AgentProofError::UnauthorizedWitness)?;
 
-    // 防止重复签名
     require!(
         proof.witness_status[witness_idx] == 0,
         AgentProofError::AlreadySigned
@@ -55,14 +70,31 @@ pub fn handler(
         proof.signature_count += 1;
     }
 
-    // 检查是否达到 2-of-3 阈值
+    // Check 2-of-3 approval threshold
     if proof.signature_count >= 2 {
-        // 验证通过
         proof.status = 1;
         proof.settled_at = clock.unix_timestamp;
 
-        // 更新 Agent 声誉
-        ctx.accounts.agent_record.record_task_result(true, &clock);
+        ctx.accounts.agent_record.update_ewma(100, &clock);
+
+        // Settle escrow if present
+        if let (Some(escrow), Some(agent_wallet), Some(_user_wallet)) = (
+            ctx.accounts.task_escrow.as_mut(),
+            ctx.accounts.agent_wallet.as_ref(),
+            ctx.accounts.user_wallet.as_ref(),
+        ) {
+            require!(escrow.status == 0, AgentProofError::TaskAlreadySettled);
+            let amount = escrow.amount_lamports;
+            **escrow.to_account_info().try_borrow_mut_lamports()? -= amount;
+            **agent_wallet.try_borrow_mut_lamports()? += amount;
+            escrow.status = 1;
+
+            emit!(crate::instructions::settle_task::TaskSettled {
+                task_id,
+                approved: true,
+                amount_lamports: amount,
+            });
+        }
 
         emit!(ProofVerified {
             task_id,
@@ -74,14 +106,32 @@ pub fn handler(
         msg!("Proof verified! Task: {:?}", task_id);
     }
 
-    // 检查是否有 2 个拒绝 → 验证失败
+    // Check 2-of-3 rejection threshold
     let reject_count = proof.witness_status.iter().filter(|&&s| s == 2).count();
     if reject_count >= 2 {
-        proof.status = 2; // rejected
+        proof.status = 2;
         proof.settled_at = clock.unix_timestamp;
 
-        // 更新 Agent 声誉（失败）
-        ctx.accounts.agent_record.record_task_result(false, &clock);
+        ctx.accounts.agent_record.update_ewma(0, &clock);
+
+        // Refund escrow if present
+        if let (Some(escrow), Some(_agent_wallet), Some(user_wallet)) = (
+            ctx.accounts.task_escrow.as_mut(),
+            ctx.accounts.agent_wallet.as_ref(),
+            ctx.accounts.user_wallet.as_ref(),
+        ) {
+            require!(escrow.status == 0, AgentProofError::TaskAlreadySettled);
+            let amount = escrow.amount_lamports;
+            **escrow.to_account_info().try_borrow_mut_lamports()? -= amount;
+            **user_wallet.try_borrow_mut_lamports()? += amount;
+            escrow.status = 2;
+
+            emit!(crate::instructions::settle_task::TaskSettled {
+                task_id,
+                approved: false,
+                amount_lamports: amount,
+            });
+        }
 
         emit!(ProofRejected {
             task_id,

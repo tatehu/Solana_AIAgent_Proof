@@ -5,6 +5,7 @@ pub mod initialize_witness_pool;
 pub mod register_agent;
 pub mod register_witness;
 pub mod submit_proof;
+pub mod settle_task;
 pub mod witness_sign;
 
 pub use create_task::CreateTask;
