@@ -26,6 +26,13 @@ export interface ProofVerifyRequest {
   expected_output?: Record<string, unknown>;
 }
 
+export interface IntentResult {
+  aligned: boolean;
+  confidence: number;
+  reason: string;
+  risk_flags: string[];
+}
+
 export interface ProofResult {
   task_id: string;
   status: "pending" | "verified" | "rejected";
@@ -34,6 +41,7 @@ export interface ProofResult {
     approved: boolean;
     reason?: string;
   }>;
+  intent_result?: IntentResult;
 }
 
 export interface RiskScore {
