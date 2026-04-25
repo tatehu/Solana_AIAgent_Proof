@@ -32,4 +32,22 @@ pub enum AgentProofError {
 
     #[msg("Invalid task type")]
     InvalidTaskType,
+
+    #[msg("Task not found")]
+    TaskNotFound,
+
+    #[msg("Task has already been settled")]
+    TaskAlreadySettled,
+
+    #[msg("Task deadline has passed")]
+    TaskExpired,
+
+    #[msg("Task deadline has not passed yet")]
+    TaskNotExpired,
+
+    #[msg("Capability hash does not match agent record")]
+    CapabilityMismatch,
+
+    #[msg("Amount must be greater than zero")]
+    InvalidAmount,
 }
