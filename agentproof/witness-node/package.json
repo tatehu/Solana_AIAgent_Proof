@@ -9,8 +9,10 @@
     "test": "tsx src/test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@coral-xyz/anchor": "^0.30.0",
     "@solana/web3.js": "^1.91.0",
+    "axios": "^1.15.2",
     "bs58": "^5.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",

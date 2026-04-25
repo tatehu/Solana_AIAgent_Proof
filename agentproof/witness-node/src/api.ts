@@ -2,7 +2,10 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import { ChainVerifier } from "./verifier";
 import { WitnessSigner } from "./signer";
+import { ChainClient } from "./chain-client";
 import { VerifyRequest, AgentProofTask } from "./types";
+import { IntentVerifier } from "./intent-verifier";
+import { IntentResult } from "./types";
 
 const app = express();
 app.use(cors());
@@ -13,10 +16,14 @@ const taskStore = new Map<string, AgentProofTask>();
 
 let verifier: ChainVerifier;
 let signer: WitnessSigner;
+let chainClient: ChainClient;
+let intentVerifier: IntentVerifier;
 
-export function initApp(rpcUrl: string, privateKey: string) {
+export function initApp(rpcUrl: string, privateKey: string, programId: string) {
   verifier = new ChainVerifier(rpcUrl);
   signer = new WitnessSigner(privateKey);
+  chainClient = new ChainClient(rpcUrl, privateKey, programId);
+  intentVerifier = new IntentVerifier();
   return app;
 }
 
@@ -26,6 +33,17 @@ app.get("/health", (_req: Request, res: Response) => {
     status: "ok",
     witness_pubkey: signer?.publicKey,
     timestamp: Date.now(),
+  });
+});
+
+// 返回 3 个见证节点公钥（前端 submit_proof 时需要）
+app.get("/api/v1/pubkeys", (_req: Request, res: Response) => {
+  if (!chainClient) {
+    return res.status(503).json({ error: "Chain client not initialized" });
+  }
+  const keys = chainClient.getWitnessPublicKeys();
+  return res.json({
+    witnesses: [keys.primary, keys.secondary1, keys.secondary2],
   });
 });
 
@@ -48,6 +66,30 @@ app.post("/api/v1/verify", async (req: Request, res: Response) => {
 
     // 执行链上验证
     const verification = await verifier.verify(verifyReq);
+
+    // Claude intent verification (only if chain verified and intentVerifier available)
+    let intentResult: IntentResult | undefined;
+    if (verification.approved && intentVerifier) {
+      try {
+        intentResult = await intentVerifier.verify({
+          agent_pubkey: verifyReq.agent_pubkey,
+          task_type: verifyReq.task_type,
+          expected_output: verifyReq.expected_output,
+          tx_summary: {
+            programs_called: [],
+            fund_flows: JSON.stringify(verification.chainData ?? {}),
+            failure_rate: 0,
+            slot: verifyReq.slot,
+          },
+        });
+        if (!intentResult.aligned) {
+          verification.approved = false;
+          verification.reason = `Intent mismatch: ${intentResult.reason}`;
+        }
+      } catch (err) {
+        console.warn('[intent] verification failed, skipping:', err);
+      }
+    }
 
     // 构建验证结果（含见证签名）
     const result = signer.buildVerifyResult(
@@ -73,7 +115,37 @@ app.post("/api/v1/verify", async (req: Request, res: Response) => {
       } ${verification.reason ? "- " + verification.reason : ""}`
     );
 
-    return res.json({ task, result });
+    // 异步提交 witness_sign × 3 到链上（不阻塞 HTTP 响应）
+    if (verifyReq.agent_pubkey && chainClient) {
+      setImmediate(async () => {
+        try {
+          const agentPubkey =
+            verifyReq.agent_pubkey ||
+            (await chainClient.readAgentPubkeyFromProof(verifyReq.task_id));
+
+          if (agentPubkey) {
+            const signResults = await chainClient.submitWitnessSign(
+              verifyReq.task_id,
+              agentPubkey,
+              verification.approved,
+              verification.reason
+            );
+            const settled = signResults.some((r) => r.signature);
+            console.log(
+              `[ChainSign] Task ${verifyReq.task_id}: ${settled ? "settled on-chain" : "chain sign failed"}`
+            );
+          } else {
+            console.warn(
+              `[ChainSign] Cannot find agent_pubkey for task ${verifyReq.task_id}`
+            );
+          }
+        } catch (e) {
+          console.error("[ChainSign] Unexpected error:", e);
+        }
+      });
+    }
+
+    return res.json({ task, result, intent_result: intentResult });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error(`[Verify Error] ${message}`);
@@ -98,7 +170,6 @@ app.get("/api/v1/agent/:pubkey", async (req: Request, res: Response) => {
   const { pubkey } = req.params;
 
   // TODO: 从链上 AgentRecord PDA 读取
-  // 这里返回模拟数据（Demo 用）
   return res.json({
     agent_pubkey: pubkey,
     reputation_score: 847,

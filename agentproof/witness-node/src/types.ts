@@ -37,3 +37,26 @@ export interface AgentProofTask {
   created_at: number;
   settled_at?: number;
 }
+
+export interface IntentVerifyParams {
+  agent_pubkey: string;
+  task_type: string;
+  expected_output?: unknown;
+  tx_summary: {
+    programs_called: string[];
+    fund_flows: string;
+    failure_rate: number;
+    slot: number;
+  };
+}
+
+export interface IntentResult {
+  aligned: boolean;
+  confidence: number;
+  reason: string;
+  risk_flags: string[];
+}
+
+export interface VerifyResultWithIntent extends VerifyResult {
+  intent_result?: IntentResult;
+}
