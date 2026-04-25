@@ -3,6 +3,14 @@ import Anthropic from '@anthropic-ai/sdk';
 import { CapabilityManifest } from './manifest-store';
 import { TxSummary } from './tx-summarizer';
 
+const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
+if (!authToken) throw new Error('ANTHROPIC_AUTH_TOKEN not configured');
+
+const client = new Anthropic({
+  apiKey: authToken,
+  ...(process.env.ANTHROPIC_BASE_URL ? { baseURL: process.env.ANTHROPIC_BASE_URL } : {}),
+});
+
 export interface AuditResult {
   credit_score: number;
   safety_index: number;
@@ -43,16 +51,6 @@ export async function auditAgent(
   manifest: CapabilityManifest | undefined,
   txSummary: TxSummary
 ): Promise<AuditResult> {
-  const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
-  const baseURL = process.env.ANTHROPIC_BASE_URL;
-
-  if (!authToken) throw new Error('ANTHROPIC_AUTH_TOKEN not configured');
-
-  const client = new Anthropic({
-    apiKey: authToken,
-    ...(baseURL ? { baseURL } : {}),
-  });
-
   const response = await client.messages.create({
     model: 'claude-opus-4-5',
     max_tokens: 1024,
