@@ -15,5 +15,14 @@ pub struct TaskEscrow {
 }
 
 impl TaskEscrow {
-    pub const LEN: usize = 8 + 32 + 32 + 32 + 8 + 32 + 8 + 1 + 8 + 1;
+    pub const LEN: usize = 8      // discriminator
+        + 32   // task_id
+        + 32   // user
+        + 32   // agent
+        + 8    // amount_lamports
+        + 32   // capability_hash
+        + 8    // deadline
+        + 1    // status
+        + 8    // created_at
+        + 1;   // bump
 }
