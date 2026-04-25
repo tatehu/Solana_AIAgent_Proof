@@ -175,9 +175,10 @@ export default function VerifyPage() {
         [Buffer.from("proof"), Buffer.from(taskIdBytes)],
         PROGRAM_ID
       );
-      const agentPubkeyObj = new PublicKey(agentPubkey);
+      // agent_record PDA must use the signer (publicKey), not agentPubkeyInput,
+      // because the Rust constraint is seeds = [b"agent", agent.key().as_ref()].
       const [agentRecordPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("agent"), agentPubkeyObj.toBuffer()],
+        [Buffer.from("agent"), publicKey.toBuffer()],
         PROGRAM_ID
       );
       const [witnessPoolPda] = PublicKey.findProgramAddressSync(
@@ -223,8 +224,11 @@ export default function VerifyPage() {
         setChainProof({ txSig: chainTxSig, status: "submitted" });
       } catch (chainErr) {
         const msg = chainErr instanceof Error ? chainErr.message : String(chainErr);
-        setChainProof({ txSig: "", status: "error", error: msg });
-        // Continue anyway — witness node HTTP verification is still useful
+        const friendlyMsg = msg.includes("AccountNotInitialized") || msg.includes("account not found")
+          ? "Your wallet is not registered as an agent — go to List Agent first."
+          : msg;
+        setChainProof({ txSig: "", status: "error", error: friendlyMsg });
+        // Continue to witness node for off-chain verification anyway
       }
 
       // Step 4: call witness node HTTP API for off-chain verification + trigger chain signing
