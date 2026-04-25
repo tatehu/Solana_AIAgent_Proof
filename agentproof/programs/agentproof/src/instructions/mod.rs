@@ -1,4 +1,5 @@
 // programs/agentproof/src/instructions/mod.rs
+pub mod create_task;
 pub mod freeze_agent;
 pub mod initialize_witness_pool;
 pub mod register_agent;
@@ -6,6 +7,7 @@ pub mod register_witness;
 pub mod submit_proof;
 pub mod witness_sign;
 
+pub use create_task::CreateTask;
 pub use freeze_agent::FreezeAgent;
 pub use initialize_witness_pool::InitializeWitnessPool;
 pub use register_agent::RegisterAgent;
