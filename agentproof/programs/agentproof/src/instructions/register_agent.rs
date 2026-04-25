@@ -46,7 +46,8 @@ pub fn handler(
     record.agent_pubkey = ctx.accounts.agent.key();
     record.capability_hash = capability_hash;
     record.staked_lamports = stake_lamports;
-    record.reputation_score = 100; // 初始声誉 100
+    record.credit_score = AgentRecord::initial_credit(stake_lamports);
+    record.safety_index = 50; // neutral until audit-engine updates
     record.tasks_completed = 0;
     record.tasks_failed = 0;
     record.success_rate_bps = 10000; // 初始 100%
