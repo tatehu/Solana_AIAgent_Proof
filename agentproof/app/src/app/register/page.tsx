@@ -256,6 +256,19 @@ export default function RegisterPage() {
       {/* 注册表单：未注册时显示 */}
       {!checkingExisting && !existingAgent && (
       <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
+
+        {/* Audit pipeline banner */}
+        <div className="bg-purple-900/20 border border-purple-800/50 rounded-lg p-3 text-xs text-purple-300 space-y-1">
+          <div className="font-semibold text-purple-200 flex items-center gap-1.5">
+            🔍 Registration triggers a 3-step trust audit
+          </div>
+          <div className="text-gray-400 space-y-0.5 pl-5">
+            <div>1. <span className="text-white">Helius</span> pulls your full on-chain transaction history</div>
+            <div>2. <span className="text-white">Claude Opus</span> audits behavior and assigns an initial credit score</div>
+            <div>3. Score + capability hash are stored on-chain in your <span className="text-white">AgentRecord</span></div>
+          </div>
+        </div>
+
         <div>
           <label className="block text-sm text-gray-400 mb-2">
             Capability Manifest
@@ -330,28 +343,31 @@ export default function RegisterPage() {
         )}
 
         {auditResult && (
-          <div className="mt-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
-            <h3 className="text-lg font-semibold text-white mb-3">历史审计结果</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <span className="text-gray-400 text-sm">初始信用分</span>
-                <div className="text-2xl font-bold text-green-400">{auditResult.credit_score}/100</div>
+          <div className="mt-2 p-4 bg-gray-800/80 rounded-lg border border-green-800/50">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-green-400 text-lg">🔍</span>
+              <h3 className="font-semibold text-white">Historical Audit Complete</h3>
+              <span className="text-xs text-gray-500 ml-auto">{auditResult.tx_count} txs analyzed</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div className="bg-gray-900 rounded-lg p-3 text-center">
+                <div className="text-xs text-gray-400 mb-1">Initial Credit Score</div>
+                <div className="text-2xl font-bold text-green-400">{auditResult.credit_score}<span className="text-sm text-gray-500">/100</span></div>
               </div>
-              <div>
-                <span className="text-gray-400 text-sm">安全指数</span>
-                <div className="text-2xl font-bold text-blue-400">{auditResult.safety_index}/100</div>
+              <div className="bg-gray-900 rounded-lg p-3 text-center">
+                <div className="text-xs text-gray-400 mb-1">Safety Index</div>
+                <div className="text-2xl font-bold text-blue-400">{auditResult.safety_index}<span className="text-sm text-gray-500">/100</span></div>
               </div>
             </div>
             {auditResult.risk_flags.length > 0 && (
-              <div className="mt-3">
-                <span className="text-yellow-400 text-sm">风险标记：</span>
-                <ul className="list-disc list-inside text-gray-300 text-sm mt-1">
+              <div className="mb-2">
+                <div className="text-xs text-yellow-400 font-semibold mb-1">Risk flags detected:</div>
+                <ul className="list-disc list-inside text-gray-300 text-xs space-y-0.5">
                   {auditResult.risk_flags.map((flag, i) => <li key={i}>{flag}</li>)}
                 </ul>
               </div>
             )}
-            <p className="text-gray-300 text-sm mt-3">{auditResult.audit_summary}</p>
-            <p className="text-gray-500 text-xs mt-2">分析了 {auditResult.tx_count} 笔历史交易</p>
+            <p className="text-gray-400 text-xs leading-relaxed">{auditResult.audit_summary}</p>
           </div>
         )}
 

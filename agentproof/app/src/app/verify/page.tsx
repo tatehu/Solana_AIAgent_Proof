@@ -251,10 +251,41 @@ export default function VerifyPage() {
 
   return (
     <div className="max-w-xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold">Verify Task</h1>
-      <p className="text-gray-400">
-        Submit a task proof to witness nodes for on-chain verification.
-      </p>
+      <div>
+        <h1 className="text-2xl font-bold">Verify Task</h1>
+        <p className="text-gray-400 mt-1">
+          Submit a task proof to witness nodes for on-chain verification.
+        </p>
+      </div>
+
+      {/* Verification pipeline banner */}
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 text-xs space-y-2">
+        <div className="text-gray-400 font-semibold uppercase tracking-wide text-xs mb-2">Verification Pipeline</div>
+        <div className="flex items-start gap-3">
+          <span className="bg-purple-900/50 text-purple-300 rounded-full w-5 h-5 flex items-center justify-center shrink-0 font-bold">1</span>
+          <div>
+            <span className="text-white font-medium">Chain Verification</span>
+            <span className="text-gray-500 ml-2">Helius confirms the tx_signature exists on-chain</span>
+          </div>
+        </div>
+        <div className="flex items-start gap-3">
+          <span className="bg-blue-900/50 text-blue-300 rounded-full w-5 h-5 flex items-center justify-center shrink-0 font-bold">2</span>
+          <div>
+            <span className="text-white font-medium">Intent Verification</span>
+            <span className="text-gray-500 ml-2">Claude Haiku checks if the action matches the agent's declared capability</span>
+          </div>
+        </div>
+        <div className="flex items-start gap-3">
+          <span className="bg-green-900/50 text-green-300 rounded-full w-5 h-5 flex items-center justify-center shrink-0 font-bold">3</span>
+          <div>
+            <span className="text-white font-medium">2-of-3 Threshold</span>
+            <span className="text-gray-500 ml-2">Witness nodes sign on-chain → Escrow auto-settles, EWMA credit score updates</span>
+          </div>
+        </div>
+        <div className="text-gray-600 text-xs pt-1 border-t border-gray-800">
+          ℹ️ In production, agents submit proofs automatically via the AgentProof SDK — this page is for manual testing.
+        </div>
+      </div>
 
       <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
         <div>
@@ -405,14 +436,19 @@ export default function VerifyPage() {
                   ? 'bg-green-900/20 border-green-700'
                   : 'bg-red-900/20 border-red-700'
               }`}>
-                <div className="flex items-center gap-2">
-                  <span>{result.intent_result.aligned ? '✅' : '❌'}</span>
-                  <span className="font-semibold text-white">
-                    Claude 意图验证：{result.intent_result.aligned ? '与声明能力一致' : '意图不符'}
-                    （置信度 {Math.round(result.intent_result.confidence * 100)}%）
-                  </span>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-lg">{result.intent_result.aligned ? '✅' : '❌'}</span>
+                  <div>
+                    <span className="font-semibold text-white text-sm">
+                      Intent Verification: {result.intent_result.aligned ? 'Aligned with declared capability' : 'Intent mismatch — proof rejected'}
+                    </span>
+                    <span className={`ml-2 text-xs font-medium ${result.intent_result.aligned ? 'text-green-400' : 'text-red-400'}`}>
+                      {Math.round(result.intent_result.confidence * 100)}% confidence
+                    </span>
+                  </div>
                 </div>
-                <p className="text-gray-300 text-sm mt-2">{result.intent_result.reason}</p>
+                <p className="text-gray-300 text-sm leading-relaxed">{result.intent_result.reason}</p>
+                <div className="text-gray-600 text-xs mt-2">Powered by Claude Haiku</div>
               </div>
             )}
           </div>
