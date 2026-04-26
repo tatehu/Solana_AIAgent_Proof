@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
   PublicKey,
@@ -8,11 +8,11 @@ import {
   TransactionInstruction,
   SystemProgram,
 } from "@solana/web3.js";
-import { PROGRAM_ID } from "@/lib/solana";
+import { PROGRAM_ID, RISK_MONITOR_URL } from "@/lib/solana";
 import { TASK_TYPES } from "@/lib/task-types";
 import Link from "next/link";
+import { Shield, Zap, Trophy, Lock, CheckCircle, ExternalLink } from "lucide-react";
 
-// register_agent discriminator from IDL
 const REGISTER_AGENT_DISC = Buffer.from([135, 157, 66, 195, 2, 113, 175, 30]);
 
 function encodeU64LE(value: number): Buffer {
@@ -21,8 +21,18 @@ function encodeU64LE(value: number): Buffer {
   return buf;
 }
 
+/**
+ * Build register_agent instruction.
+ * Account order matches the new Rust struct:
+ *   0. agent_record PDA  (writable, not signer)
+ *   1. agent             (readonly, not signer — just a pubkey being registered)
+ *   2. payer             (writable, signer — the connected wallet that pays)
+ *   3. stake_vault PDA   (writable, not signer)
+ *   4. system_program
+ */
 function buildRegisterAgentIx(
   agentPubkey: PublicKey,
+  payerPubkey: PublicKey,
   capabilityHash: Uint8Array,
   stakeLamports: number
 ): TransactionInstruction {
@@ -34,275 +44,337 @@ function buildRegisterAgentIx(
     [Buffer.from("stake_vault"), agentPubkey.toBuffer()],
     PROGRAM_ID
   );
-
   const data = Buffer.concat([
     REGISTER_AGENT_DISC,
     Buffer.from(capabilityHash),
     encodeU64LE(stakeLamports),
   ]);
-
   return new TransactionInstruction({
     programId: PROGRAM_ID,
     keys: [
-      { pubkey: agentRecord, isSigner: false, isWritable: true },
-      { pubkey: agentPubkey, isSigner: true, isWritable: true },
-      { pubkey: stakeVault, isSigner: false, isWritable: true },
+      { pubkey: agentRecord,            isSigner: false, isWritable: true  },
+      { pubkey: agentPubkey,            isSigner: false, isWritable: false },
+      { pubkey: payerPubkey,            isSigner: true,  isWritable: true  },
+      { pubkey: stakeVault,             isSigner: false, isWritable: true  },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data,
   });
 }
 
+function formatError(e: unknown): string {
+  if (e instanceof Error) {
+    // Anchor / Solana errors often embed JSON logs — surface them
+    const msg = e.message;
+    // Try to extract anchor error message from logs
+    const anchorMatch = msg.match(/AnchorError[^"]*"([^"]+)"/);
+    if (anchorMatch) return anchorMatch[1];
+    // Simulation failure with logs
+    const simMatch = msg.match(/Transaction simulation failed: (.*)/);
+    if (simMatch) return `Simulation failed: ${simMatch[1]}`;
+    return msg;
+  }
+  if (typeof e === "object" && e !== null) {
+    const obj = e as Record<string, unknown>;
+    // SendTransactionError exposes logs
+    if (Array.isArray(obj["logs"])) {
+      const logs = (obj["logs"] as string[]).filter(
+        (l) => l.includes("Error") || l.includes("failed") || l.includes("AnchorError")
+      );
+      if (logs.length > 0) return logs.join("\n");
+    }
+    if (typeof obj["message"] === "string") return obj["message"];
+    return JSON.stringify(e);
+  }
+  return String(e);
+}
+
 export default function RegisterPage() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
+
+  // Agent to register — any pubkey, not necessarily the connected wallet
+  const [agentPubkeyInput, setAgentPubkeyInput] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentDesc, setAgentDesc] = useState("");
+  const [agentFramework, setAgentFramework] = useState("unknown");
+  const [agentExternalUrl, setAgentExternalUrl] = useState("");
   const [stakeAmount, setStakeAmount] = useState("0.1");
-  const [capabilities, setCapabilities] = useState<string[]>(["SOLANA_SWAP", "DATA_ANALYSIS"]);
+  const [selectedTypes, setSelectedTypes] = useState<string[]>(["SOLANA_SWAP", "DATA_ANALYSIS"]);
+
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [txSig, setTxSig] = useState("");
   const [error, setError] = useState("");
-  const [existingAgent, setExistingAgent] = useState<{ credit_score: number; safety_index: number; staked_lamports: number; registered_at: number } | null>(null);
-  const [checkingExisting, setCheckingExisting] = useState(false);
+
   const [auditResult, setAuditResult] = useState<{
-    credit_score: number;
-    safety_index: number;
-    risk_flags: string[];
-    audit_summary: string;
-    tx_count: number;
+    credit_score: number; safety_index: number; risk_flags: string[];
+    audit_summary: string; tx_count: number;
   } | null>(null);
 
-  // 每次钱包切换时，检查该钱包是否已在链上注册过 Agent
-  useEffect(() => {
-    if (!publicKey) {
-      setExistingAgent(null);
-      return;
-    }
-
-    async function checkExisting() {
-      if (!publicKey) return;
-      setCheckingExisting(true);
-      setExistingAgent(null);
-      try {
-        const [agentRecordPDA] = PublicKey.findProgramAddressSync(
-          [Buffer.from("agent"), publicKey.toBuffer()],
-          PROGRAM_ID
-        );
-        const accountInfo = await connection.getAccountInfo(agentRecordPDA);
-        if (accountInfo && accountInfo.data.length > 0) {
-          const data = accountInfo.data;
-          let offset = 8 + 32 + 32;
-          const staked_lamports = Number(data.readBigUInt64LE(offset)); offset += 8;
-          const credit_score = Number(data.readBigUInt64LE(offset)); offset += 8;
-          let safety_index = 50;
-          if ((data as Buffer).length >= 132) { safety_index = Number(data.readBigUInt64LE(offset)); offset += 8; }
-          offset += 8 + 8 + 2 + 1; // tasks_completed, tasks_failed, success_rate_bps, is_frozen
-          const registered_at = Number(data.readBigInt64LE(offset));
-          setExistingAgent({ credit_score, safety_index, staked_lamports, registered_at });
-        }
-      } catch {
-        // 账户不存在是正常情况，忽略错误
-      } finally {
-        setCheckingExisting(false);
-      }
-    }
-
-    checkExisting();
-  }, [publicKey, connection]);
+  function toggleType(t: string) {
+    setSelectedTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]);
+  }
 
   async function handleRegister() {
-    if (!publicKey) {
-      setError("Please connect your wallet first");
-      return;
-    }
+    if (!publicKey) { setError("Please connect your wallet — it pays the transaction fee and stake"); return; }
+
+    const agentKeyStr = agentPubkeyInput.trim() || publicKey.toBase58();
+    let agentKey: PublicKey;
+    try { agentKey = new PublicKey(agentKeyStr); }
+    catch { setError("Invalid agent wallet address — must be a valid Solana public key"); return; }
+
+    if (!agentName.trim()) { setError("Agent name is required"); return; }
+    if (!agentDesc.trim()) { setError("Description is required"); return; }
+    if (selectedTypes.length === 0) { setError("Select at least one capability"); return; }
 
     setStatus("loading");
     setError("");
 
     try {
       const stakeSOL = parseFloat(stakeAmount);
-      if (stakeSOL < 0.1) throw new Error("Minimum stake is 0.1 SOL");
+      if (isNaN(stakeSOL) || stakeSOL < 0.1) throw new Error("Minimum stake is 0.1 SOL");
 
-      // SHA-256 of capability manifest via Web Crypto API
+      // Check if agent already registered on-chain — skip chain tx if so
+      const [agentRecordPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("agent"), agentKey.toBuffer()],
+        PROGRAM_ID
+      );
+      const existingAccount = await connection.getAccountInfo(agentRecordPda);
+
+      const capabilityList = selectedTypes.map((t) => ({
+        task_type: t,
+        description: TASK_TYPES.find((tt) => tt.value === t)?.label ?? t,
+      }));
       const manifest = {
-        capabilities,
+        agent_pubkey: agentKey.toBase58(),
+        name: agentName.trim(),
+        description: agentDesc.trim(),
+        capabilities: capabilityList,
         version: "1.0",
-        agent: publicKey.toBase58(),
+        framework: agentFramework,
+        external_url: agentExternalUrl.trim(),
+        owner_wallet: publicKey.toBase58(),
       };
+
+      if (existingAccount) {
+        // Already registered — just update manifest
+        try {
+          await fetch(`${RISK_MONITOR_URL}/manifest`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(manifest),
+          });
+        } catch (e) { console.warn("Manifest save failed:", e); }
+        setTxSig("already-registered");
+        setStatus("success");
+        return;
+      }
+
+      // Check payer balance
+      const balance = await connection.getBalance(publicKey);
+      const stakeLamports = Math.floor(stakeSOL * LAMPORTS_PER_SOL);
+      const estimatedFee = 10_000; // ~0.00001 SOL tx fee
+      if (balance < stakeLamports + estimatedFee) {
+        throw new Error(
+          `Insufficient balance. Need ${(stakeLamports + estimatedFee) / LAMPORTS_PER_SOL} SOL, ` +
+          `but connected wallet only has ${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL.`
+        );
+      }
+
       const encoded = new TextEncoder().encode(JSON.stringify(manifest));
-      const hashBuffer = await window.crypto.subtle.digest("SHA-256", encoded);
+      const hashBuffer = await window.crypto.subtle.digest("SHA-256", encoded.buffer as ArrayBuffer);
       const capabilityHash = new Uint8Array(hashBuffer);
 
-      const stakeLamports = Math.floor(stakeSOL * LAMPORTS_PER_SOL);
-      const ix = buildRegisterAgentIx(publicKey, capabilityHash, stakeLamports);
+      const ix = buildRegisterAgentIx(agentKey, publicKey, capabilityHash, stakeLamports);
 
-      const { blockhash, lastValidBlockHeight } =
-        await connection.getLatestBlockhash();
-      const transaction = new Transaction();
-      transaction.recentBlockhash = blockhash;
-      transaction.feePayer = publicKey;
-      transaction.add(ix);
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      const tx = new Transaction();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = publicKey;
+      tx.add(ix);
 
-      const sig = await sendTransaction(transaction, connection);
-      await connection.confirmTransaction(
-        { signature: sig, blockhash, lastValidBlockHeight },
-        "confirmed"
-      );
-
+      const sig = await sendTransaction(tx, connection);
+      await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
       setTxSig(sig);
-      setStatus("success");
 
-      // Try to fetch audit result from audit-engine
       try {
-        const auditResponse = await fetch('http://localhost:3002/audit', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            agent_pubkey: publicKey.toBase58(),
-            capability_manifest: manifest,
-          }),
+        await fetch(`${RISK_MONITOR_URL}/manifest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(manifest),
         });
-        if (auditResponse.ok) {
-          const auditData = await auditResponse.json();
-          setAuditResult(auditData);
-        }
-      } catch (auditErr) {
-        console.warn('Audit fetch failed (non-critical):', auditErr);
-      }
-    } catch (e) {
-      console.error("Register error:", e);
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object"
-          ? JSON.stringify(e)
-          : String(e);
-      setError(msg);
+      } catch (e) { console.warn("Manifest save failed (non-critical):", e); }
+
+      try {
+        const auditRes = await fetch(`${RISK_MONITOR_URL}/audit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_pubkey: agentKey.toBase58(), capability_manifest: manifest }),
+        });
+        if (auditRes.ok) setAuditResult(await auditRes.json());
+      } catch (e) { console.warn("Audit failed (non-critical):", e); }
+
+      setStatus("success");
+    } catch (e: unknown) {
+      setError(formatError(e));
       setStatus("error");
     }
   }
 
   return (
-    <div className="max-w-xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">List Your Agent</h1>
-        <p className="text-gray-400 mt-1">
-          Become a verified agent provider on AgentProof. Stake SOL as collateral,
-          declare your capabilities, and build an on-chain reputation that users can trust.
+    <div className="max-w-2xl mx-auto space-y-8">
+
+      {/* Header */}
+      <div className="relative">
+        <div className="pointer-events-none absolute -top-8 left-0 w-64 h-48 bg-violet-600/10 blur-3xl rounded-full -z-10" />
+        <h1 className="text-3xl font-extrabold text-white">Register an Agent</h1>
+        <p className="text-slate-400 mt-2 text-sm leading-relaxed">
+          Register any AI agent on-chain. Your connected wallet pays the stake — the agent&apos;s pubkey gets the on-chain record.
+          Perfect for marketplace operators registering multiple agents at once.
         </p>
       </div>
 
-      {/* Value prop for providers */}
-      <div className="grid grid-cols-3 gap-3 text-center text-sm">
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
-          <div className="text-xl mb-1">🏆</div>
-          <div className="font-semibold text-white">On-chain Reputation</div>
-          <div className="text-xs text-gray-500 mt-0.5">Every verified task raises your score</div>
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
-          <div className="text-xl mb-1">🔒</div>
-          <div className="font-semibold text-white">Stake = Trust Signal</div>
-          <div className="text-xs text-gray-500 mt-0.5">Users see your skin in the game</div>
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
-          <div className="text-xl mb-1">✅</div>
-          <div className="font-semibold text-white">Proof of Work</div>
-          <div className="text-xs text-gray-500 mt-0.5">Tamper-proof task history on-chain</div>
-        </div>
+      {/* Value props */}
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { icon: <Trophy className="h-4 w-4" />, title: "On-chain Reputation", desc: "Every verified task raises your trust score" },
+          { icon: <Lock className="h-4 w-4" />,   title: "Insurance Eligibility",  desc: "Staked agents qualify for protocol insurance coverage" },
+          { icon: <CheckCircle className="h-4 w-4" />, title: "Tamper-proof Proof",   desc: "Immutable task history verified by 3 witness nodes" },
+        ].map(({ icon, title, desc }) => (
+          <div key={title} className="glass-card rounded-2xl p-4 text-center">
+            <div className="inline-flex p-2 rounded-lg bg-violet-500/10 text-violet-400 mb-2">{icon}</div>
+            <div className="font-semibold text-sm text-white">{title}</div>
+            <div className="text-xs text-slate-500 mt-0.5">{desc}</div>
+          </div>
+        ))}
       </div>
 
-      {/* 已注册提示 */}
-      {checkingExisting && (
-        <div className="bg-gray-900 rounded-xl border border-gray-700 p-4 text-sm text-gray-400">
-          Checking if this wallet is already registered...
-        </div>
-      )}
+      {/* Registration form */}
+      <div className="glass-card rounded-2xl p-7 space-y-6">
 
-      {!checkingExisting && existingAgent && (
-        <div className="bg-green-900/20 rounded-xl border border-green-700 p-5 space-y-3">
-          <div className="flex items-center gap-2 text-green-400 font-semibold">
-            ✅ Your agent is live on-chain
+        {/* Audit pipeline notice */}
+        <div className="bg-violet-500/8 border border-violet-500/20 rounded-xl p-4 text-xs text-slate-400 space-y-1.5">
+          <div className="font-semibold text-violet-300 flex items-center gap-1.5 text-sm">
+            <Zap className="h-4 w-4 text-violet-400" />
+            Registration triggers a 3-step security audit
           </div>
-          <p className="text-xs text-gray-400">
-            Users can now view your on-chain reputation and verified task history.
-          </p>
-          <div className="grid grid-cols-3 gap-3 text-sm">
-            <div className="bg-gray-900/60 rounded-lg p-3 text-center">
-              <div className="text-gray-400 text-xs mb-1">Credit Score</div>
-              <div className="text-white font-bold">{existingAgent.credit_score}</div>
-            </div>
-            <div className="bg-gray-900/60 rounded-lg p-3 text-center">
-              <div className="text-gray-400 text-xs mb-1">Safety Index</div>
-              <div className="text-white font-bold">{existingAgent.safety_index}</div>
-            </div>
-            <div className="bg-gray-900/60 rounded-lg p-3 text-center">
-              <div className="text-gray-400 text-xs mb-1">Staked</div>
-              <div className="text-white font-bold">{(existingAgent.staked_lamports / 1e9).toFixed(2)} SOL</div>
-            </div>
-            <div className="bg-gray-900/60 rounded-lg p-3 text-center">
-              <div className="text-gray-400 text-xs mb-1">Registered</div>
-              <div className="text-white font-bold text-xs">
-                {new Date(existingAgent.registered_at * 1000).toLocaleDateString()}
-              </div>
-            </div>
-          </div>
-          <Link
-            href={`/agent/${publicKey?.toBase58()}`}
-            className="block text-center text-sm text-purple-400 hover:text-purple-300 underline"
-          >
-            View Agent Details →
-          </Link>
-        </div>
-      )}
-
-      {/* 注册表单：未注册时显示 */}
-      {!checkingExisting && !existingAgent && (
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
-
-        {/* Audit pipeline banner */}
-        <div className="bg-purple-900/20 border border-purple-800/50 rounded-lg p-3 text-xs text-purple-300 space-y-1">
-          <div className="font-semibold text-purple-200 flex items-center gap-1.5">
-            🔍 Registration triggers a 3-step trust audit
-          </div>
-          <div className="text-gray-400 space-y-0.5 pl-5">
-            <div>1. <span className="text-white">Helius</span> pulls your full on-chain transaction history</div>
-            <div>2. <span className="text-white">Claude Opus</span> audits behavior and assigns an initial credit score</div>
-            <div>3. Score + capability hash are stored on-chain in your <span className="text-white">AgentRecord</span></div>
+          <div className="pl-5 space-y-1">
+            <div>1. <span className="text-white font-medium">Helius</span> pulls your full on-chain transaction history for behavioral analysis</div>
+            <div>2. <span className="text-white font-medium">Claude Opus</span> audits behavior, assigns a credit score and safety index</div>
+            <div>3. Verified agents with staked collateral become <span className="text-white font-medium">insurance-eligible</span></div>
           </div>
         </div>
 
+        <div className="space-y-4">
+          {/* Agent pubkey */}
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">
+              Agent Wallet Address <span className="text-rose-400">*</span>
+              <span className="text-slate-500 ml-2 text-xs">— any agent pubkey; your wallet pays the stake</span>
+            </label>
+            <input
+              type="text"
+              value={agentPubkeyInput}
+              onChange={(e) => setAgentPubkeyInput(e.target.value)}
+              placeholder={publicKey ? `Leave blank to register your own wallet: ${publicKey.toBase58().slice(0, 20)}...` : "Paste agent wallet address (Solana pubkey)"}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 font-mono focus:outline-none focus:border-violet-500/50 transition-colors"
+            />
+          </div>
+
+          {/* Name */}
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Agent Name <span className="text-rose-400">*</span></label>
+            <input
+              type="text"
+              value={agentName}
+              onChange={(e) => setAgentName(e.target.value)}
+              placeholder="e.g. SwapBot Alpha"
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Description <span className="text-rose-400">*</span></label>
+            <textarea
+              value={agentDesc}
+              onChange={(e) => setAgentDesc(e.target.value)}
+              placeholder="Describe what this agent does — used for intent recognition (e.g. 'Swaps SOL to USDC at best price using Jupiter, max 1 SOL per trade')"
+              rows={3}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors resize-none"
+            />
+          </div>
+
+          {/* External URL */}
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">
+              Agent Page URL
+              <span className="text-slate-500 ml-2 text-xs">— optional: link to marketplace listing or agent page</span>
+            </label>
+            <div className="relative">
+              <ExternalLink className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+              <input
+                type="url"
+                value={agentExternalUrl}
+                onChange={(e) => setAgentExternalUrl(e.target.value)}
+                placeholder="https://tars.pro/ai-market/... or https://your-agent.xyz"
+                className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-violet-500/50 transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Framework */}
+          <div>
+            <label className="block text-sm text-slate-400 mb-1.5">Framework</label>
+            <select
+              value={agentFramework}
+              onChange={(e) => setAgentFramework(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500/50 transition-colors"
+            >
+              <option value="unknown">Unknown / Other</option>
+              <option value="elizaos">ElizaOS</option>
+              <option value="agent_kit">Agent Kit</option>
+              <option value="goat">GOAT</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Capabilities */}
         <div>
-          <label className="block text-sm text-gray-400 mb-2">
-            Capability Manifest
-            <span className="text-gray-600 ml-2 text-xs">— what tasks can your agent perform?</span>
+          <label className="block text-sm text-slate-400 mb-2">
+            Capabilities
+            <span className="text-slate-500 ml-2 text-xs">— select what this agent can do</span>
           </label>
-          <div className="grid grid-cols-2 gap-2">
-            {TASK_TYPES.map((t) => (
-              <label
-                key={t.value}
-                className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 cursor-pointer hover:border-purple-500 transition-colors"
-              >
-                <input
-                  type="checkbox"
-                  checked={capabilities.includes(t.value)}
-                  onChange={(e) =>
-                    setCapabilities((prev) =>
-                      e.target.checked
-                        ? [...prev, t.value]
-                        : prev.filter((v) => v !== t.value)
-                    )
-                  }
-                  className="accent-purple-500"
-                />
-                <span className="text-sm text-white">{t.label}</span>
-              </label>
-            ))}
+          <div className="grid grid-cols-1 gap-2">
+            {TASK_TYPES.map((t) => {
+              const selected = selectedTypes.includes(t.value);
+              return (
+                <label
+                  key={t.value}
+                  className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border cursor-pointer transition-all ${
+                    selected
+                      ? "border-violet-500/40 bg-violet-500/10 text-violet-200"
+                      : "border-white/8 bg-white/[0.02] text-slate-400 hover:border-white/15"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleType(t.value)}
+                    className="accent-violet-500 h-4 w-4"
+                  />
+                  <span className="text-sm">{t.label}</span>
+                </label>
+              );
+            })}
           </div>
         </div>
 
+        {/* Stake */}
         <div>
-          <label className="block text-sm text-gray-400 mb-1">
+          <label className="block text-sm text-slate-400 mb-1.5">
             Stake Amount (SOL, min 0.1)
-            <span className="text-gray-600 ml-2 text-xs">— collateral users see before hiring you</span>
+            <span className="text-slate-500 ml-2 text-xs">— deducted from your connected wallet as collateral for the agent</span>
           </label>
           <input
             type="number"
@@ -310,75 +382,85 @@ export default function RegisterPage() {
             onChange={(e) => setStakeAmount(e.target.value)}
             min="0.1"
             step="0.1"
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white"
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-violet-500/50 transition-colors"
           />
         </div>
 
         {!publicKey && (
-          <p className="text-yellow-400 text-sm">
-            ⚠️ Connect your Phantom wallet (Devnet) to register
+          <p className="text-amber-400 text-sm flex items-center gap-2">
+            <Shield className="h-4 w-4" />
+            Connect your Phantom wallet (Devnet) to register agents
           </p>
         )}
 
         <button
           onClick={handleRegister}
           disabled={!publicKey || status === "loading"}
-          className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:text-gray-500 text-white font-semibold py-3 rounded-lg transition-colors"
+          className="w-full gradient-btn text-white font-semibold py-3.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {status === "loading" ? "Registering on-chain..." : "List My Agent"}
+          {status === "loading" ? "Registering on-chain..." : "Register Agent"}
         </button>
 
-        {status === "success" && (
-          <div className="bg-green-900/30 border border-green-700 rounded-lg p-3 text-green-300 text-sm">
-            ✅ Agent listed on-chain! Users can now find and hire your agent.
-            <br />
+        {status === "success" && txSig === "already-registered" && (
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 text-blue-300 text-sm">
+            <div className="font-semibold mb-1">Agent already registered on-chain</div>
+            <p className="text-xs text-blue-400">
+              This agent already has an on-chain AgentRecord. Manifest updated — profile is live.
+            </p>
+          </div>
+        )}
+
+        {status === "success" && txSig !== "already-registered" && (
+          <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 text-emerald-300 text-sm">
+            <div className="font-semibold mb-1">Agent registered on-chain!</div>
             <a
               href={`https://explorer.solana.com/tx/${txSig}?cluster=devnet`}
               target="_blank"
               rel="noreferrer"
-              className="underline mt-1 block"
+              className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300"
             >
-              View on Solana Explorer →
+              View on Solana Explorer <ExternalLink className="h-3 w-3" />
             </a>
           </div>
         )}
 
         {auditResult && (
-          <div className="mt-2 p-4 bg-gray-800/80 rounded-lg border border-green-800/50">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-green-400 text-lg">🔍</span>
+          <div className="glass-card rounded-xl p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Zap className="h-4 w-4 text-violet-400" />
               <h3 className="font-semibold text-white">Historical Audit Complete</h3>
-              <span className="text-xs text-gray-500 ml-auto">{auditResult.tx_count} txs analyzed</span>
+              <span className="text-xs text-slate-500 ml-auto">{auditResult.tx_count} txs analyzed</span>
             </div>
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              <div className="bg-gray-900 rounded-lg p-3 text-center">
-                <div className="text-xs text-gray-400 mb-1">Initial Credit Score</div>
-                <div className="text-2xl font-bold text-green-400">{auditResult.credit_score}<span className="text-sm text-gray-500">/100</span></div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="bg-white/[0.04] rounded-xl p-4 text-center">
+                <div className="text-xs text-slate-500 mb-1">Initial Credit Score</div>
+                <div className="text-3xl font-extrabold text-emerald-400">
+                  {auditResult.credit_score}<span className="text-sm text-slate-500">/100</span>
+                </div>
               </div>
-              <div className="bg-gray-900 rounded-lg p-3 text-center">
-                <div className="text-xs text-gray-400 mb-1">Safety Index</div>
-                <div className="text-2xl font-bold text-blue-400">{auditResult.safety_index}<span className="text-sm text-gray-500">/100</span></div>
+              <div className="bg-white/[0.04] rounded-xl p-4 text-center">
+                <div className="text-xs text-slate-500 mb-1">Safety Index</div>
+                <div className="text-3xl font-extrabold text-violet-400">
+                  {auditResult.safety_index}<span className="text-sm text-slate-500">/100</span>
+                </div>
               </div>
             </div>
             {auditResult.risk_flags.length > 0 && (
-              <div className="mb-2">
-                <div className="text-xs text-yellow-400 font-semibold mb-1">Risk flags detected:</div>
-                <ul className="list-disc list-inside text-gray-300 text-xs space-y-0.5">
-                  {auditResult.risk_flags.map((flag, i) => <li key={i}>{flag}</li>)}
-                </ul>
-              </div>
+              <ul className="list-disc list-inside text-slate-400 text-xs space-y-0.5 mb-3">
+                {auditResult.risk_flags.map((flag, i) => <li key={i}>{flag}</li>)}
+              </ul>
             )}
-            <p className="text-gray-400 text-xs leading-relaxed">{auditResult.audit_summary}</p>
+            <p className="text-slate-500 text-xs leading-relaxed">{auditResult.audit_summary}</p>
           </div>
         )}
 
         {status === "error" && (
-          <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-300 text-sm break-all">
-            ❌ {error}
+          <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-rose-300 text-sm">
+            <div className="font-semibold mb-1 text-rose-200">Registration failed</div>
+            <pre className="text-xs text-rose-400 whitespace-pre-wrap break-all font-mono leading-relaxed">{error}</pre>
           </div>
         )}
       </div>
-      )}
     </div>
   );
 }

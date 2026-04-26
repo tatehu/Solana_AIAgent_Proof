@@ -1,0 +1,20 @@
+# Claude & tooling
+.claude/
+.playwright-mcp/
+graphify-out/
+
+# Rust build artifacts
+**/target/
+
+# Node dependencies
+**/node_modules/
+
+# Next.js build output
+**/.next/
+
+# Environment files
+.env.local
+*.local
+
+# macOS
+.DS_Store

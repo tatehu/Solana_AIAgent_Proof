@@ -1,3 +1,191 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  body {
+    background: #020617;
+    color: #e2e8f0;
+  }
+
+  ::selection {
+    background: rgba(59, 130, 246, 0.3);
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0f172a;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+  }
+}
+
+/* ── Keyframes (rentagents.ai design system) ── */
+@keyframes blob {
+  0%, 100% { transform: translate(0px) scale(1); }
+  33%       { transform: translate(30px, -50px) scale(1.1); }
+  66%       { transform: translate(-20px, 20px) scale(0.9); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-20px); }
+}
+
+@keyframes gradient {
+  0%   { background-position-x: 0%;   background-position-y: 50%; }
+  50%  { background-position-x: 100%; background-position-y: 50%; }
+  100% { background-position-x: 0%;   background-position-y: 50%; }
+}
+
+@keyframes border-animation {
+  0%, 100% { border-image-source: linear-gradient(90deg, rgb(59, 130, 246), rgb(139, 92, 246)); }
+  50%       { border-image-source: linear-gradient(90deg, rgb(139, 92, 246), rgb(236, 72, 153)); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.15; transform: scale(1); }
+  50%       { opacity: 0.3;  transform: scale(1.08); }
+}
+
+@keyframes reveal-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@layer utilities {
+  /* ── Gradient text — blue→purple→pink (rentagents) ── */
+  .gradient-text {
+    background: linear-gradient(90deg, #60a5fa, #a855f7, #ec4899);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .gradient-text-animated {
+    background: linear-gradient(270deg, #60a5fa, #a855f7, #ec4899, #3b82f6);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradient 6s ease infinite;
+  }
+
+  /* ── Primary gradient button — rentagents.ai style ── */
+  .gradient-btn {
+    background: linear-gradient(135deg, #2563eb 0%, #7c3aed 50%, #db2777 100%);
+    transition: box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: rgba(59, 130, 246, 0.2) 0px 10px 15px -3px, rgba(59, 130, 246, 0.2) 0px 4px 6px -4px;
+  }
+  .gradient-btn:hover {
+    box-shadow: rgba(168, 85, 247, 0.5) 0px 25px 50px -12px;
+    transform: scale(1.03);
+  }
+  .gradient-btn:focus {
+    outline: none;
+    box-shadow: #020617 0px 0px 0px 2px, #a855f7 0px 0px 0px 4px,
+                rgba(59, 130, 246, 0.2) 0px 10px 15px -3px,
+                rgba(59, 130, 246, 0.2) 0px 4px 6px -4px;
+  }
+
+  /* ── Glass card — rentagents.ai backdrop-blur-xl ── */
+  .glass-card {
+    background: rgba(30, 41, 59, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+
+  .glass-card-hover {
+    background: rgba(30, 41, 59, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .glass-card-hover:hover {
+    background: rgba(30, 41, 59, 0.7);
+    border-color: rgba(255, 255, 255, 0.18);
+    transform: translateY(-2px);
+    box-shadow: rgba(59, 130, 246, 0.2) 0px 20px 25px -5px,
+                rgba(59, 130, 246, 0.2) 0px 8px 10px -6px;
+  }
+
+  /* ── Blob orb ── */
+  .blob {
+    animation: blob 7s ease infinite;
+  }
+  .blob-delay-2 { animation: blob 7s ease infinite 2s; }
+  .blob-delay-4 { animation: blob 7s ease infinite 4s; }
+
+  /* ── Float ── */
+  .float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  /* ── Nav link ── */
+  .nav-link {
+    color: #cbd5e1;
+    padding: 8px 12px;
+    border-radius: 1.5rem;
+    transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+                background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+  .nav-link:hover { color: #ffffff; }
+  .nav-link.active { color: #93c5fd; }
+
+  /* ── Input field ── */
+  .input-field {
+    @apply w-full bg-slate-800/50 border border-white/10 rounded-2xl px-4 py-3 text-white text-sm
+           placeholder:text-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1
+           focus:ring-blue-500/30 transition-colors;
+  }
+
+  /* ── Grade badges ── */
+  .badge-grade-AAA { @apply bg-emerald-500/20 text-emerald-400 border border-emerald-500/30; }
+  .badge-grade-AA  { @apply bg-teal-500/20 text-teal-400 border border-teal-500/30; }
+  .badge-grade-A   { @apply bg-blue-500/20 text-blue-400 border border-blue-500/30; }
+  .badge-grade-B   { @apply bg-amber-500/20 text-amber-400 border border-amber-500/30; }
+  .badge-grade-C   { @apply bg-rose-500/20 text-rose-400 border border-rose-500/30; }
+
+  /* ── Section padding ── */
+  .section-padding {
+    padding-top: 5rem;
+    padding-bottom: 5rem;
+  }
+
+  /* ── Reveal animation ── */
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal {
+      opacity: 0;
+      transform: translateY(40px);
+      transition: opacity 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+                  transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .stagger-1 { animation-delay: 0ms; }
+    .stagger-2 { animation-delay: 100ms; }
+    .stagger-3 { animation-delay: 200ms; }
+    .stagger-4 { animation-delay: 300ms; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

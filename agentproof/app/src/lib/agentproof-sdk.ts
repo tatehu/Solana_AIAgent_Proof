@@ -1,6 +1,5 @@
 import axios from "axios";
-import { Connection, PublicKey } from "@solana/web3.js";
-import { WITNESS_NODE_URL, RISK_MONITOR_URL, PROGRAM_ID, RPC_URL } from "./solana";
+import { WITNESS_NODE_URL, RISK_MONITOR_URL } from "./solana";
 
 export interface AgentInfo {
   agent_pubkey: string;
@@ -12,6 +11,8 @@ export interface AgentInfo {
   staked_lamports: number;
   is_frozen: boolean;
   registered_at: number;
+  owner_wallet?: string;
+  created_at?: number;
 }
 
 export interface ProofVerifyRequest {
@@ -52,6 +53,21 @@ export interface RiskScore {
   should_freeze: boolean;
   breakdown: Record<string, number>;
 }
+
+// Simple in-memory TTL cache for expensive calls
+interface CacheEntry<T> { data: T; expiresAt: number }
+class TTLCache<T> {
+  private store = new Map<string, CacheEntry<T>>();
+  get(key: string): T | null {
+    const entry = this.store.get(key);
+    if (!entry || Date.now() > entry.expiresAt) { this.store.delete(key); return null; }
+    return entry.data;
+  }
+  set(key: string, data: T, ttlMs: number) { this.store.set(key, { data, expiresAt: Date.now() + ttlMs }); }
+}
+
+const agentsCache = new TTLCache<AgentInfo[]>();
+const leaderboardCache = new TTLCache<unknown>();
 
 class AgentProofSDK {
   // ========================
@@ -101,41 +117,41 @@ class AgentProofSDK {
   }
 
   async listAgents(): Promise<AgentInfo[]> {
-    // AgentRecord discriminator: [4, 201, 129, 70, 197, 134, 47, 169]
-    const DISCRIMINATOR = Buffer.from([4, 201, 129, 70, 197, 134, 47, 169]);
-    const connection = new Connection(RPC_URL, "confirmed");
+    const cached = agentsCache.get("all");
+    if (cached) return cached;
 
-    const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
-      filters: [{ memcmp: { offset: 0, bytes: DISCRIMINATOR.toString("base64"), encoding: "base64" } }],
-    });
-
-    return accounts.map(({ account }) => {
-      const data = account.data;
-      let offset = 8; // skip discriminator
-      const agent_pubkey = new PublicKey(data.slice(offset, offset + 32)).toBase58(); offset += 32;
-      offset += 32; // capability_hash
-      const staked_lamports = Number(data.readBigUInt64LE(offset)); offset += 8;
-      const credit_score = Number(data.readBigUInt64LE(offset)); offset += 8;
-      let safety_index = 50;
-      if ((data as Buffer).length >= 132) { safety_index = Number(data.readBigUInt64LE(offset)); offset += 8; }
-      const tasks_completed = Number(data.readBigUInt64LE(offset)); offset += 8;
-      const tasks_failed = Number(data.readBigUInt64LE(offset)); offset += 8;
-      const success_rate_bps = data.readUInt16LE(offset); offset += 2;
-      const is_frozen = data[offset] === 1; offset += 1;
-      const registered_at = Number(data.readBigInt64LE(offset));
-
-      return {
-        agent_pubkey,
-        credit_score,
-        safety_index,
-        tasks_completed,
-        tasks_failed,
-        success_rate: success_rate_bps / 100,
-        staked_lamports,
-        is_frozen,
-        registered_at,
-      };
-    });
+    try {
+      const resp = await fetch(`${RISK_MONITOR_URL}/api/v1/leaderboard?limit=200&offset=0`);
+      if (!resp.ok) throw new Error(`leaderboard ${resp.status}`);
+      const data = await resp.json();
+      const result: AgentInfo[] = (data.agents ?? []).map((a: {
+        agent_id: string;
+        total_score: number;
+        completion_rate: number;
+        behavior_safety: number;
+        tx_count: number;
+        anomaly_count: number;
+        owner_wallet?: string;
+        created_at?: number;
+      }) => ({
+        agent_pubkey: a.agent_id,
+        credit_score: a.total_score,
+        safety_index: Math.round(a.behavior_safety),
+        tasks_completed: a.tx_count,
+        tasks_failed: a.anomaly_count,
+        success_rate: a.completion_rate,
+        staked_lamports: 0,
+        is_frozen: false,
+        registered_at: a.created_at ?? 0,
+        owner_wallet: a.owner_wallet,
+        created_at: a.created_at,
+      }));
+      agentsCache.set("all", result, 30_000);
+      return result;
+    } catch (e) {
+      console.error("listAgents failed:", e);
+      return [];
+    }
   }
 }
 

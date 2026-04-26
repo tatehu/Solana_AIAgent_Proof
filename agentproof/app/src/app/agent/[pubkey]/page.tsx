@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { PROGRAM_ID, RPC_URL } from "@/lib/solana";
+import { PROGRAM_ID, RPC_URL, RISK_MONITOR_URL } from "@/lib/solana";
 import { agentProof, type AgentInfo, type RiskScore } from "@/lib/agentproof-sdk";
 import Link from "next/link";
 import {
@@ -12,13 +12,80 @@ import {
   Activity,
   ExternalLink,
   Clock,
+  TrendingUp,
+  Zap,
+  AlertOctagon,
+  ArrowLeft,
 } from "lucide-react";
 
-// ── TaskProof PDA layout ──────────────────────────────────────────────────────
-// disc(8) + task_id(32) + agent_pubkey(32) + instruction_hash(32) +
-// input_hash(32) + output_hash(32) + tx_signature(64) + slot(8) +
-// task_type(1) + witnesses(96) + witness_signatures(192) + witness_status(3) +
-// signature_count(1) + status(1) + submitted_at(8) + settled_at(8)
+import { TASK_TYPES } from "@/lib/task-types";
+import { ScoreBadge } from "@/components/ScoreBadge";
+import { ScoreTrendChart } from "@/components/ScoreTrendChart";
+import { InsuranceModal } from "@/components/InsuranceModal";
+
+interface AgentManifest {
+  name: string;
+  description: string;
+  capabilities: { task_type: string; description: string }[];
+  version: string;
+  external_url?: string;
+  framework?: string;
+}
+
+interface ReputationScore {
+  agent_id: string;
+  total_score: number;
+  grade: string;
+  behavior_safety: number;
+  completion_rate: number;
+  fund_risk: number;
+  compliance: number;
+  activity_decay: number;
+  premium_multiplier: number | null;
+  has_manifest: boolean;
+  framework: string | null;
+  external_url: string | null;
+  tx_count: number;
+  anomaly_count: number;
+  max_single_sol: number;
+}
+
+interface ScoreHistoryPoint {
+  scored_at: number;
+  total_score: number;
+}
+
+async function fetchManifest(pubkey: string): Promise<AgentManifest | null> {
+  try {
+    const res = await fetch(`${RISK_MONITOR_URL}/manifest/pubkey/${pubkey}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.manifest ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchReputationScore(pubkey: string): Promise<ReputationScore | null> {
+  try {
+    const res = await fetch(`${RISK_MONITOR_URL}/api/v1/reputation/${pubkey}`);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchScoreHistory(pubkey: string): Promise<ScoreHistoryPoint[]> {
+  try {
+    const res = await fetch(`${RISK_MONITOR_URL}/api/v1/reputation/${pubkey}/history`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.history ?? [];
+  } catch {
+    return [];
+  }
+}
 
 const TASK_PROOF_DISC = Buffer.from([217, 208, 14, 234, 191, 204, 81, 220]);
 
@@ -30,23 +97,23 @@ interface TaskProof {
   slot: number;
   task_type: number;
   signature_count: number;
-  status: 0 | 1 | 2; // 0=pending 1=verified 2=rejected
+  status: 0 | 1 | 2;
   submitted_at: number;
   settled_at: number;
 }
 
 function parseTaskProof(data: Buffer): TaskProof | null {
   try {
-    let o = 8; // skip discriminator
+    let o = 8;
     const task_id = data.slice(o, o + 32).toString("hex"); o += 32;
-    o += 32; // agent_pubkey
-    o += 32; // instruction_hash
+    o += 32;
+    o += 32;
     const input_hash = data.slice(o, o + 32).toString("hex"); o += 32;
     const output_hash = data.slice(o, o + 32).toString("hex"); o += 32;
     const tx_signature = data.slice(o, o + 64).toString("hex"); o += 64;
     const slot = Number(data.readBigUInt64LE(o)); o += 8;
     const task_type = data[o]; o += 1;
-    o += 96 + 192 + 3; // witnesses, witness_signatures, witness_status
+    o += 96 + 192 + 3;
     const signature_count = data[o]; o += 1;
     const status = data[o] as 0 | 1 | 2; o += 1;
     const submitted_at = Number(data.readBigInt64LE(o)); o += 8;
@@ -58,23 +125,26 @@ function parseTaskProof(data: Buffer): TaskProof | null {
 }
 
 async function fetchTaskProofs(agentPubkey: string): Promise<TaskProof[]> {
-  const connection = new Connection(RPC_URL, "confirmed");
-  const agentKey = new PublicKey(agentPubkey);
-  const agentBytes = agentKey.toBuffer();
+  try {
+    const connection = new Connection(RPC_URL, "confirmed");
+    const agentKey = new PublicKey(agentPubkey);
 
-  const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
-    filters: [
-      { memcmp: { offset: 0, bytes: TASK_PROOF_DISC.toString("base64"), encoding: "base64" } },
-      { memcmp: { offset: 40, bytes: agentBytes.toString("base64"), encoding: "base64" } },
-    ],
-  });
+    const accounts = await connection.getProgramAccounts(PROGRAM_ID, {
+      filters: [
+        { memcmp: { offset: 0, bytes: Buffer.from(TASK_PROOF_DISC).toString("base64"), encoding: "base64" as never } },
+        { memcmp: { offset: 40, bytes: agentKey.toBase58() } },
+      ],
+    });
 
-  const proofs = accounts
-    .map(({ account }) => parseTaskProof(account.data as unknown as Buffer))
-    .filter((p): p is TaskProof => p !== null);
+    const proofs = accounts
+      .map(({ account }) => parseTaskProof(account.data as unknown as Buffer))
+      .filter((p): p is TaskProof => p !== null);
 
-  proofs.sort((a, b) => b.submitted_at - a.submitted_at);
-  return proofs;
+    proofs.sort((a, b) => b.submitted_at - a.submitted_at);
+    return proofs;
+  } catch {
+    return [];
+  }
 }
 
 async function fetchAgentOnChain(pubkey: string): Promise<(AgentInfo & { capability_hash: string }) | null> {
@@ -87,8 +157,6 @@ async function fetchAgentOnChain(pubkey: string): Promise<(AgentInfo & { capabil
   const info = await connection.getAccountInfo(pda);
   if (!info) return null;
   const d = info.data as unknown as Buffer;
-  // Old on-chain accounts (124 bytes) lack the safety_index field added later;
-  // new accounts (132 bytes) include it between credit_score and tasks_completed.
   let o = 8;
   const agent_pubkey = new PublicKey(d.slice(o, o + 32)).toBase58(); o += 32;
   const capability_hash = d.slice(o, o + 32).toString("hex"); o += 32;
@@ -109,22 +177,32 @@ async function fetchAgentOnChain(pubkey: string): Promise<(AgentInfo & { capabil
   };
 }
 
-// ── Status helpers ────────────────────────────────────────────────────────────
 const STATUS_LABEL: Record<number, string> = { 0: "Pending", 1: "Verified", 2: "Rejected" };
 const STATUS_COLOR: Record<number, string> = {
-  0: "text-yellow-400 bg-yellow-900/30 border-yellow-700",
-  1: "text-green-400 bg-green-900/30 border-green-700",
-  2: "text-red-400 bg-red-900/30 border-red-700",
+  0: "text-amber-400 bg-amber-500/15 border-amber-500/30",
+  1: "text-emerald-400 bg-emerald-500/15 border-emerald-500/30",
+  2: "text-rose-400 bg-rose-500/15 border-rose-500/30",
 };
 
-// ── Page ──────────────────────────────────────────────────────────────────────
+const SCORE_DIMENSIONS = [
+  { key: "behavior_safety" as const, label: "Behavior Safety", max: 35, color: "from-emerald-500 to-teal-500" },
+  { key: "completion_rate" as const, label: "Completion Rate", max: 25, color: "from-blue-500 to-cyan-500" },
+  { key: "fund_risk" as const, label: "Fund Risk", max: 20, color: "from-amber-500 to-yellow-500" },
+  { key: "compliance" as const, label: "SDK Compliance", max: 12, color: "from-violet-500 to-purple-500" },
+  { key: "activity_decay" as const, label: "Activity", max: 8, color: "from-pink-500 to-rose-500" },
+];
+
 export default function AgentDetailPage() {
   const { pubkey } = useParams<{ pubkey: string }>();
   const [agent, setAgent] = useState<(AgentInfo & { capability_hash?: string }) | null>(null);
+  const [manifest, setManifest] = useState<AgentManifest | null>(null);
   const [proofs, setProofs] = useState<TaskProof[]>([]);
   const [risk, setRisk] = useState<RiskScore | null>(null);
+  const [reputation, setReputation] = useState<ReputationScore | null>(null);
+  const [scoreHistory, setScoreHistory] = useState<ScoreHistoryPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showInsurance, setShowInsurance] = useState(false);
 
   useEffect(() => {
     if (!pubkey) return;
@@ -133,71 +211,275 @@ export default function AgentDetailPage() {
       fetchAgentOnChain(pubkey),
       fetchTaskProofs(pubkey),
       agentProof.analyzeAgent(pubkey).catch(() => null),
+      fetchManifest(pubkey),
+      fetchReputationScore(pubkey),
+      fetchScoreHistory(pubkey),
     ])
-      .then(([a, p, r]) => {
+      .then(([a, p, r, m, rep, hist]) => {
         setAgent(a);
         setProofs(p);
         setRisk(r);
+        setManifest(m);
+        setReputation(rep);
+        // If history is empty or only 1 point, pad with current score so the chart renders
+        if (rep) {
+          const now = Math.floor(Date.now() / 1000);
+          const base: ScoreHistoryPoint[] = hist.length > 0 ? hist : [];
+          const hasNow = base.some((h) => Math.abs(h.scored_at - now) < 3600);
+          setScoreHistory(hasNow ? base : [...base, { scored_at: now, total_score: rep.total_score }]);
+        } else {
+          setScoreHistory(hist);
+        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [pubkey]);
 
-  if (loading) return <div className="text-center py-20 text-gray-400">Loading...</div>;
-  if (error) return <div className="text-red-400 py-10">Error: {error}</div>;
-  if (!agent) return <div className="text-gray-400 py-10">Agent not found on-chain.</div>;
+  if (loading) {
+    return (
+      <div className="max-w-3xl mx-auto space-y-4 py-12">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="glass-card rounded-2xl p-6 h-24 animate-pulse" />
+        ))}
+      </div>
+    );
+  }
+  if (error) return <div className="text-rose-400 py-10">Error: {error}</div>;
 
-  const stakedSOL = (agent.staked_lamports / 1e9).toFixed(3);
-  const registeredDate = new Date((agent.registered_at as number) * 1000).toLocaleString();
+  // Only render if agent exists on-chain (manifest-only/metaplex agents are disabled)
+  if (!agent && !reputation) {
+    return <div className="text-slate-400 py-10">Agent not found.</div>;
+  }
+
+  const stakedSOL = agent ? (agent.staked_lamports / 1e9).toFixed(3) : "—";
+  const registeredDate = agent && (agent.registered_at as number) > 0
+    ? new Date((agent.registered_at as number) * 1000).toLocaleString()
+    : null;
+  const externalUrl = manifest?.external_url ?? reputation?.external_url;
+  const framework = manifest?.framework ?? reputation?.framework;
+  const isOnChain = !!agent;
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Shield className={`h-8 w-8 ${agent.is_frozen ? "text-red-400" : "text-purple-400"}`} />
-        <div>
-          <h1 className="text-2xl font-bold">Agent Detail</h1>
-          <p className="font-mono text-sm text-gray-400 break-all">{agent.agent_pubkey}</p>
+    <div className="max-w-3xl mx-auto space-y-5">
+
+      {/* ── Hero header ── */}
+      <div className="relative glass-card rounded-2xl p-6 overflow-hidden">
+        <div className="pointer-events-none absolute top-0 right-0 w-64 h-40 bg-violet-600/10 blur-3xl rounded-full -z-10" />
+
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-start gap-4 flex-1 min-w-0">
+            {/* Avatar */}
+            <div className={`h-14 w-14 rounded-2xl shrink-0 flex items-center justify-center ${
+              agent?.is_frozen ? "bg-rose-500/20" : "bg-violet-500/20"
+            }`}>
+              <Shield className={`h-7 w-7 ${agent?.is_frozen ? "text-rose-400" : "text-violet-400"}`} />
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap mb-1">
+                <h1 className="text-2xl font-extrabold text-white">
+                  {manifest?.name ?? "Agent Detail"}
+                </h1>
+                {reputation && <ScoreBadge grade={reputation.grade} score={reputation.total_score} />}
+                {agent?.is_frozen && (
+                  <span className="bg-rose-500/20 text-rose-300 border border-rose-500/30 px-3 py-0.5 rounded-lg text-sm font-semibold">
+                    FROZEN
+                  </span>
+                )}
+                {framework && framework !== "unknown" && (
+                  <span className="bg-white/8 text-slate-400 border border-white/10 px-2 py-0.5 rounded-lg text-xs">
+                    {framework}
+                  </span>
+                )}
+              </div>
+              {manifest?.description && (
+                <p className="text-slate-400 text-sm mb-1.5">{manifest.description}</p>
+              )}
+              <p className="font-mono text-xs text-slate-600 break-all">{agent?.agent_pubkey ?? pubkey}</p>
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex flex-col gap-2 shrink-0">
+            {reputation && reputation.grade !== "C" && !agent?.is_frozen && (
+              <button
+                onClick={() => setShowInsurance(true)}
+                className="gradient-btn text-white text-sm font-semibold px-4 py-2 rounded-xl flex items-center gap-2"
+              >
+                <Shield className="h-4 w-4" /> Insure Agent
+              </button>
+            )}
+            {externalUrl && (
+              <a
+                href={externalUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="px-4 py-2 bg-white/8 hover:bg-white/12 border border-white/10 rounded-xl text-sm font-medium text-slate-300 hover:text-white transition-colors flex items-center gap-2"
+              >
+                <Zap className="h-4 w-4" /> Use Now
+              </a>
+            )}
+          </div>
         </div>
-        {agent.is_frozen && (
-          <span className="ml-auto bg-red-900/50 text-red-300 border border-red-700 px-3 py-1 rounded-full text-sm">
-            FROZEN
-          </span>
+
+        {/* Capabilities */}
+        {manifest?.capabilities && manifest.capabilities.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-white/5">
+            {manifest.capabilities.map((cap) => {
+              const label = TASK_TYPES.find((t) => t.value === cap.task_type)?.label ?? cap.task_type;
+              return (
+                <span
+                  key={cap.task_type}
+                  className="bg-violet-500/15 border border-violet-500/25 text-violet-300 text-xs px-3 py-1 rounded-lg"
+                >
+                  {label}
+                </span>
+              );
+            })}
+          </div>
         )}
       </div>
 
-      {/* Stats */}
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 grid grid-cols-2 md:grid-cols-3 gap-4">
-        <Stat label="Credit Score" value={String(agent.credit_score)} unit="/ 100" />
-        <Stat label="Safety Index" value={String(agent.safety_index)} unit="/ 100" />
-        <Stat label="Staked" value={stakedSOL} unit="SOL" />
-        <Stat label="Tasks Done" value={String(agent.tasks_completed)} />
-        <Stat label="Tasks Failed" value={String(agent.tasks_failed)} />
-        <Stat label="Success Rate" value={agent.success_rate.toFixed(1)} unit="%" />
-        <Stat label="Registered" value={registeredDate} small />
-      </div>
+      {/* ── Reputation Score ── */}
+      {reputation && (
+        <div className="glass-card rounded-2xl p-6">
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4 text-violet-400" />
+              <span className="font-semibold text-white">Reputation Score</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <ScoreBadge grade={reputation.grade} score={reputation.total_score} />
+              {reputation.premium_multiplier !== null ? (
+                <span className="text-xs text-blue-400 bg-blue-500/15 border border-blue-500/25 px-2.5 py-0.5 rounded-lg">
+                  Insurance ×{reputation.premium_multiplier}
+                </span>
+              ) : (
+                <span className="text-xs text-slate-500 bg-white/5 border border-white/8 px-2.5 py-0.5 rounded-lg">
+                  Not insurable
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="space-y-4">
+            {SCORE_DIMENSIONS.map((dim) => {
+              const val = reputation[dim.key] ?? 0;
+              const pct = (val / dim.max) * 100;
+              return (
+                <div key={dim.key}>
+                  <div className="flex justify-between text-sm mb-1.5">
+                    <span className="text-slate-400">{dim.label}</span>
+                    <span className="font-mono text-white">
+                      {val}<span className="text-slate-600">/{dim.max}</span>
+                    </span>
+                  </div>
+                  <div className="h-2 bg-white/8 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full bg-gradient-to-r ${dim.color} rounded-full transition-all`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-      {/* Risk Score */}
+      {/* ── Score history chart ── */}
+      {reputation && (
+        <div className="glass-card rounded-2xl p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <TrendingUp className="h-4 w-4 text-emerald-400" />
+            <span className="font-semibold text-white">Score History</span>
+          </div>
+          <ScoreTrendChart data={scoreHistory} />
+        </div>
+      )}
+
+      {/* ── On-chain stats (only shown when agent has on-chain record) ── */}
+      {agent && (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {[
+            { label: "Credit Score", value: String(agent.credit_score), unit: "/ 100", color: "text-violet-400" },
+            { label: "Safety Index", value: String(agent.safety_index), unit: "/ 100", color: "text-blue-400" },
+            { label: "Staked", value: stakedSOL, unit: "SOL", color: "text-emerald-400" },
+            { label: "Tasks Done", value: String(agent.tasks_completed), unit: "", color: "text-white" },
+            { label: "Tasks Failed", value: String(agent.tasks_failed), unit: "", color: agent.tasks_failed > 0 ? "text-rose-400" : "text-white" },
+            { label: "Success Rate", value: agent.success_rate.toFixed(1), unit: "%", color: "text-white" },
+          ].map(({ label, value, unit, color }) => (
+            <div key={label} className="glass-card rounded-2xl p-4">
+              <div className="text-xs text-slate-500 mb-1">{label}</div>
+              <div className={`text-2xl font-extrabold ${color}`}>
+                {value}
+                {unit && <span className="text-sm font-normal text-slate-500 ml-1">{unit}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* [DISABLED] Manifest-only badge (no on-chain record) — metaplex-sourced agents hidden */}
+      {/* {!agent && (manifest || reputation) && (
+        <div className="glass-card rounded-2xl px-5 py-3 flex items-center gap-2 text-sm text-slate-400 border border-amber-500/20">
+          <span className="text-amber-400">ℹ</span>
+          This agent is registered via manifest (tars.pro / Metaplex) but has not yet registered on-chain with a stake deposit.
+        </div>
+      )} */}
+
+      {/* Registered date */}
+      {registeredDate && (
+        <div className="glass-card rounded-2xl px-5 py-3 flex items-center gap-2 text-sm text-slate-500">
+          <Clock className="h-3.5 w-3.5" />
+          Registered {registeredDate}
+        </div>
+      )}
+
+      {/* ── Tx stats ── */}
+      {reputation && (reputation.tx_count > 0 || reputation.anomaly_count > 0) && (
+        <div className="glass-card rounded-2xl p-5 grid grid-cols-3 gap-4">
+          <div>
+            <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+              <Activity className="h-3 w-3" /> Transactions
+            </div>
+            <div className="text-2xl font-extrabold text-white">{reputation.tx_count}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500 mb-1 flex items-center gap-1">
+              <AlertOctagon className="h-3 w-3 text-rose-400" /> Anomalies
+            </div>
+            <div className={`text-2xl font-extrabold ${reputation.anomaly_count > 0 ? "text-rose-400" : "text-emerald-400"}`}>
+              {reputation.anomaly_count}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500 mb-1">Max Single SOL</div>
+            <div className="text-2xl font-extrabold text-white">{reputation.max_single_sol.toFixed(3)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Risk Score ── */}
       {risk && (
-        <div className={`rounded-xl border p-5 flex items-start justify-between gap-4 ${
-          risk.level === "danger" ? "bg-red-900/10 border-red-700" :
-          risk.level === "warning" ? "bg-yellow-900/10 border-yellow-700" :
-          "bg-green-900/10 border-green-700"
+        <div className={`glass-card rounded-2xl border p-5 flex items-start justify-between gap-4 ${
+          risk.level === "danger" ? "border-rose-500/30 bg-rose-500/5" :
+          risk.level === "warning" ? "border-amber-500/30 bg-amber-500/5" :
+          "border-emerald-500/30 bg-emerald-500/5"
         }`}>
           <div>
-            <div className="text-sm text-gray-400 mb-1">Risk Score</div>
-            <div className={`text-5xl font-bold ${
-              risk.level === "danger" ? "text-red-400" :
-              risk.level === "warning" ? "text-yellow-400" : "text-green-400"
+            <div className="text-xs text-slate-500 mb-1">Risk Score</div>
+            <div className={`text-5xl font-extrabold ${
+              risk.level === "danger" ? "text-rose-400" :
+              risk.level === "warning" ? "text-amber-400" : "text-emerald-400"
             }`}>
               {risk.score.toFixed(0)}
             </div>
-            <div className="text-sm uppercase font-semibold text-gray-400 mt-1">{risk.level}</div>
+            <div className="text-sm uppercase font-semibold text-slate-500 mt-1">{risk.level}</div>
             {risk.reasons.length > 0 && (
               <div className="mt-3 space-y-1">
                 {risk.reasons.map((r, i) => (
-                  <div key={i} className="text-xs text-gray-300 flex items-center gap-1.5">
-                    <span className="text-red-400">⚠</span> {r}
+                  <div key={i} className="text-xs text-slate-300 flex items-center gap-1.5">
+                    <span className="text-rose-400">⚠</span> {r}
                   </div>
                 ))}
               </div>
@@ -206,8 +488,8 @@ export default function AgentDetailPage() {
           <div className="space-y-1 text-right shrink-0">
             {Object.entries(risk.breakdown).map(([key, val]) => (
               <div key={key} className="text-xs">
-                <span className="text-gray-500 capitalize">{key.replace(/_/g, " ")}: </span>
-                <span className={val > 20 ? "text-red-400 font-bold" : "text-gray-300"}>
+                <span className="text-slate-500 capitalize">{key.replace(/_/g, " ")}: </span>
+                <span className={(val as number) > 20 ? "text-rose-400 font-bold" : "text-slate-300"}>
                   {(val as number).toFixed(0)}
                 </span>
               </div>
@@ -216,22 +498,25 @@ export default function AgentDetailPage() {
         </div>
       )}
 
-      {/* Capability Hash */}
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-4">
-        <div className="text-sm text-gray-400 mb-1">Capability Hash (SHA-256)</div>
-        <div className="font-mono text-xs text-purple-300 break-all">
-          {(agent as AgentInfo & { capability_hash?: string }).capability_hash}
+      {/* ── Capability Hash (only when on-chain) ── */}
+      {agent && (
+        <div className="glass-card rounded-2xl p-5">
+          <div className="text-xs text-slate-500 mb-2 font-medium uppercase tracking-wide">Capability Hash (SHA-256)</div>
+          <div className="font-mono text-xs text-violet-300 break-all">
+            {(agent as AgentInfo & { capability_hash?: string }).capability_hash}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* TaskProof History */}
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-6">
-        <h2 className="font-semibold text-lg mb-4 flex items-center gap-2">
-          <Activity className="h-5 w-5 text-purple-400" />
-          TaskProof History ({proofs.length})
+      {/* ── TaskProof History ── */}
+      <div className="glass-card rounded-2xl p-6">
+        <h2 className="font-semibold text-lg mb-5 flex items-center gap-2">
+          <Activity className="h-5 w-5 text-violet-400" />
+          TaskProof History
+          <span className="text-sm font-normal text-slate-500 ml-1">({proofs.length})</span>
         </h2>
         {proofs.length === 0 ? (
-          <div className="text-gray-500 text-sm text-center py-8">
+          <div className="text-slate-500 text-sm text-center py-10">
             No TaskProofs found on-chain for this agent.
           </div>
         ) : (
@@ -239,41 +524,41 @@ export default function AgentDetailPage() {
             {proofs.map((proof) => (
               <div
                 key={proof.task_id}
-                className="rounded-lg border border-gray-800 p-4 hover:border-gray-700 transition-colors"
+                className="rounded-xl border border-white/8 p-4 hover:border-white/15 transition-colors"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-2">
-                      <span className={`text-xs px-2 py-0.5 rounded-full border font-semibold ${STATUS_COLOR[proof.status]}`}>
+                      <span className={`text-xs px-2.5 py-0.5 rounded-lg border font-semibold ${STATUS_COLOR[proof.status]}`}>
                         {proof.status === 1 ? <CheckCircle className="h-3 w-3 inline mr-1" /> :
                          proof.status === 2 ? <AlertTriangle className="h-3 w-3 inline mr-1" /> :
                          <Clock className="h-3 w-3 inline mr-1" />}
                         {STATUS_LABEL[proof.status]}
                       </span>
-                      <span className="text-xs text-gray-500">
+                      <span className="text-xs text-slate-500">
                         {proof.signature_count}/3 signatures
                       </span>
                     </div>
 
-                    <div className="space-y-1 text-xs text-gray-400 font-mono">
+                    <div className="space-y-1 text-xs text-slate-400 font-mono">
                       <div className="flex gap-2">
-                        <span className="text-gray-600 w-20 shrink-0">task_id</span>
-                        <span className="text-gray-300 truncate">{proof.task_id.slice(0, 40)}...</span>
+                        <span className="text-slate-600 w-16 shrink-0">task_id</span>
+                        <span className="text-slate-300 truncate">{proof.task_id.slice(0, 40)}...</span>
                       </div>
                       <div className="flex gap-2">
-                        <span className="text-gray-600 w-20 shrink-0">output</span>
-                        <span className="text-gray-300 truncate">{proof.output_hash.slice(0, 40)}...</span>
+                        <span className="text-slate-600 w-16 shrink-0">output</span>
+                        <span className="text-slate-300 truncate">{proof.output_hash.slice(0, 40)}...</span>
                       </div>
                       <div className="flex gap-2">
-                        <span className="text-gray-600 w-20 shrink-0">input</span>
-                        <span className="text-gray-300 truncate">{proof.input_hash.slice(0, 40)}...</span>
+                        <span className="text-slate-600 w-16 shrink-0">input</span>
+                        <span className="text-slate-300 truncate">{proof.input_hash.slice(0, 40)}...</span>
                       </div>
                     </div>
                   </div>
 
                   <div className="text-right shrink-0 space-y-1">
-                    <div className="text-xs text-gray-500">slot {proof.slot.toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">
+                    <div className="text-xs text-slate-500">slot {proof.slot.toLocaleString()}</div>
+                    <div className="text-xs text-slate-500">
                       {proof.submitted_at > 0
                         ? new Date(proof.submitted_at * 1000).toLocaleString()
                         : "—"}
@@ -282,7 +567,7 @@ export default function AgentDetailPage() {
                       href={`https://explorer.solana.com/address/${pubkey}?cluster=devnet`}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300"
+                      className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 transition-colors"
                     >
                       Explorer <ExternalLink className="h-3 w-3" />
                     </a>
@@ -294,21 +579,27 @@ export default function AgentDetailPage() {
         )}
       </div>
 
-      <Link href="/" className="inline-block text-sm text-gray-400 hover:text-white">
-        ← Back to Dashboard
+      {/* Back link */}
+      <Link
+        href="/leaderboard"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors"
+      >
+        <ArrowLeft className="h-4 w-4" /> Back to Reputationboard
       </Link>
-    </div>
-  );
-}
 
-function Stat({ label, value, unit, small }: { label: string; value: string; unit?: string; small?: boolean }) {
-  return (
-    <div>
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className={`font-bold ${small ? "text-sm text-gray-300" : "text-2xl"}`}>
-        {value}
-        {unit && <span className="text-sm font-normal text-gray-400 ml-1">{unit}</span>}
-      </div>
+      {/* Insurance modal */}
+      {showInsurance && reputation && (
+        <InsuranceModal
+          agent={{
+            agent_id: pubkey ?? "",
+            name: manifest?.name ?? null,
+            grade: reputation.grade,
+            total_score: reputation.total_score,
+            premium_multiplier: reputation.premium_multiplier,
+          }}
+          onClose={() => setShowInsurance(false)}
+        />
+      )}
     </div>
   );
 }

@@ -9,17 +9,22 @@ pub const MIN_STAKE_LAMPORTS: u64 = 100_000_000; // 0.1 SOL
 pub struct RegisterAgent<'info> {
     #[account(
         init,
-        payer = agent,
+        payer = payer,
         space = AgentRecord::LEN,
         seeds = [b"agent", agent.key().as_ref()],
         bump
     )]
     pub agent_record: Account<'info, AgentRecord>,
 
-    #[account(mut)]
-    pub agent: Signer<'info>,
+    /// The agent being registered — does NOT need to sign; any pubkey can be registered
+    /// CHECK: arbitrary agent pubkey; uniqueness enforced by PDA init
+    pub agent: UncheckedAccount<'info>,
 
-    /// CHECK: 质押金存储账户（系统程序 PDA）
+    /// The wallet paying rent + stake (the marketplace operator or owner wallet)
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: stake vault PDA for this agent
     #[account(
         mut,
         seeds = [b"stake_vault", agent.key().as_ref()],
@@ -56,34 +61,36 @@ pub fn handler(
     record.last_active_at = clock.unix_timestamp;
     record.bump = ctx.bumps.agent_record;
 
-    // 转移质押 SOL 到 vault
+    // 转移质押 SOL 到 vault（payer 出资）
     let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
-        &ctx.accounts.agent.key(),
+        &ctx.accounts.payer.key(),
         &ctx.accounts.stake_vault.key(),
         stake_lamports,
     );
     anchor_lang::solana_program::program::invoke(
         &transfer_ix,
         &[
-            ctx.accounts.agent.to_account_info(),
+            ctx.accounts.payer.to_account_info(),
             ctx.accounts.stake_vault.to_account_info(),
         ],
     )?;
 
     emit!(AgentRegistered {
         agent_pubkey: record.agent_pubkey,
+        payer_pubkey: ctx.accounts.payer.key(),
         capability_hash,
         stake_lamports,
         timestamp: clock.unix_timestamp,
     });
 
-    msg!("Agent registered: {}", record.agent_pubkey);
+    msg!("Agent registered: {} (staked by {})", record.agent_pubkey, ctx.accounts.payer.key());
     Ok(())
 }
 
 #[event]
 pub struct AgentRegistered {
     pub agent_pubkey: Pubkey,
+    pub payer_pubkey: Pubkey,
     pub capability_hash: [u8; 32],
     pub stake_lamports: u64,
     pub timestamp: i64,

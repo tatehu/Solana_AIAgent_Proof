@@ -58,16 +58,11 @@ export class ChainVerifier {
         return taskVerification;
       }
 
-      // Step 5: 验证交易参与者包含 Agent
+      // Step 5: 记录交易参与者（仅供参考，不作为阻断条件）
       const accountKeys = tx.transaction.message.accountKeys.map((k) =>
         "pubkey" in k ? k.pubkey.toBase58() : (k as PublicKey).toBase58()
       );
-      if (!accountKeys.includes(req.agent_pubkey)) {
-        return {
-          approved: false,
-          reason: `Agent ${req.agent_pubkey} not found in transaction accounts`,
-        };
-      }
+      const agentInAccounts = accountKeys.includes(req.agent_pubkey);
 
       return {
         approved: true,
@@ -76,6 +71,7 @@ export class ChainVerifier {
           block_time: tx.blockTime ?? 0,
           fee: tx.meta?.fee ?? 0,
           status: "confirmed",
+          agent_in_accounts: agentInAccounts,
         },
       };
     } catch (error) {

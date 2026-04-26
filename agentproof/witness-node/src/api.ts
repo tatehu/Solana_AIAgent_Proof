@@ -76,6 +76,7 @@ app.post("/api/v1/verify", async (req: Request, res: Response) => {
           task_type: verifyReq.task_type,
           expected_output: verifyReq.expected_output,
           tx_summary: {
+            tx_signature: verifyReq.tx_signature,
             programs_called: [],
             fund_flows: JSON.stringify(verification.chainData ?? {}),
             failure_rate: 0,

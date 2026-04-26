@@ -27,6 +27,7 @@ export interface VerifyResult {
     block_time: number;
     fee: number;
     status: string;
+    agent_in_accounts?: boolean;
   };
 }
 
@@ -43,6 +44,7 @@ export interface IntentVerifyParams {
   task_type: string;
   expected_output?: unknown;
   tx_summary: {
+    tx_signature: string;   // actual on-chain signature — passed to intent-engine
     programs_called: string[];
     fund_flows: string;
     failure_rate: number;

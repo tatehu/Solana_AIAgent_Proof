@@ -1,25 +1,28 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Shield, Activity, AlertTriangle, CheckCircle, ArrowRight, Lock, Eye, Zap } from "lucide-react";
+import { Shield, Activity, AlertTriangle, CheckCircle, ArrowRight, Lock, Eye, Zap, Users, UserCheck, Bot, Code2, Landmark } from "lucide-react";
 import { agentProof, type AgentInfo, type RiskScore } from "@/lib/agentproof-sdk";
 import Link from "next/link";
-import { useWallet } from "@solana/wallet-adapter-react";
+
+const DEMO_PROOFS = [
+  { agent: "Bx9fK...4mRt", task: "SOL/USDC swap · 12.4 SOL", grade: "AAA", ago: "3s ago" },
+  { agent: "7pQwL...9yNz", task: "JUP limit order · 800 USDC", grade: "AA", ago: "18s ago" },
+  { agent: "3kMvR...2xSp", task: "Rebalance DeFi portfolio", grade: "A", ago: "47s ago" },
+  { agent: "Dn8cH...7fWq", task: "Data analysis report", grade: "AAA", ago: "1m ago" },
+  { agent: "5zTjE...1bLu", task: "BONK/SOL swap · 5k BONK", grade: "B", ago: "2m ago" },
+];
+
+const GRADE_COLORS_MAP: Record<string, string> = {
+  AAA: "text-emerald-400",
+  AA: "text-teal-400",
+  A: "text-blue-400",
+  B: "text-amber-400",
+  C: "text-rose-400",
+};
 
 export default function Dashboard() {
-  const { publicKey } = useWallet();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-
-  function sortAgents(list: AgentInfo[], myPubkey?: string): AgentInfo[] {
-    return [...list].sort((a, b) => {
-      if (myPubkey) {
-        if (a.agent_pubkey === myPubkey) return -1;
-        if (b.agent_pubkey === myPubkey) return 1;
-      }
-      return (b.registered_at as number) - (a.registered_at as number);
-    });
-  }
   const [alerts, setAlerts] = useState<RiskScore[]>([]);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
@@ -28,16 +31,14 @@ export default function Dashboard() {
           agentProof.listAgents(),
           agentProof.getAlerts(),
         ]);
-        setAgents(sortAgents(agentList, publicKey?.toBase58()));
+        setAgents(agentList);
         setAlerts(alertList);
       } catch (e) {
         console.error(e);
-      } finally {
-        setLoading(false);
       }
     }
     load();
-    const interval = setInterval(load, 10000);
+    const interval = setInterval(load, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -49,269 +50,275 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-10">
+    <div>
 
-      {/* Hero */}
-      <div className="text-center space-y-4 py-10">
-        <div className="inline-flex items-center gap-2 bg-purple-900/30 border border-purple-700/50 rounded-full px-4 py-1.5 text-sm text-purple-300 mb-2">
-          <Zap className="h-3.5 w-3.5" />
-          Built on Solana · Powered by on-chain proofs
+      {/* ── Hero ── */}
+      <section className="relative min-h-screen flex items-center justify-center -mt-10">
+
+        <div className="relative z-10 text-center space-y-8 max-w-4xl mx-auto px-6">
+          {/* Badge */}
+          <div
+            className="inline-flex items-center gap-2 border border-blue-500/40 bg-blue-500/10 rounded-full px-4 py-1.5 text-sm text-blue-300"
+            style={{ animation: "reveal-up 0.6s ease both" }}
+          >
+            <Zap className="h-3.5 w-3.5" />
+            Built on Solana · On-chain trust infrastructure for AI agents
+          </div>
+
+          {/* Headline */}
+          <h1
+            className="text-6xl md:text-7xl lg:text-8xl font-bold leading-tight tracking-tight"
+            style={{ animation: "reveal-up 0.6s ease 0.1s both" }}
+          >
+            <span className="gradient-text-animated whitespace-nowrap">Safe · Insured · Trusted</span>
+            <br />
+            <span className="text-white text-4xl md:text-5xl lg:text-6xl">The Trust Layer for AI Agents</span>
+          </h1>
+
+          <p
+            className="text-xl text-slate-300 max-w-3xl mx-auto leading-relaxed"
+            style={{ animation: "reveal-up 0.6s ease 0.2s both" }}
+          >
+            AI agents are operating on Solana with real funds and real consequences.
+            AgentProof delivers on-chain security verification, insurance protection for every operation,
+            and transparent trust scores — accountability that every stakeholder can rely on.
+          </p>
+
+          <div
+            className="flex items-center justify-center gap-4 pt-2 flex-wrap"
+            style={{ animation: "reveal-up 0.6s ease 0.3s both" }}
+          >
+            <Link
+              href="/leaderboard"
+              className="gradient-btn text-white font-bold px-8 py-4 rounded-2xl flex items-center gap-2 text-base"
+            >
+              <span className="relative z-10">Explore Reputation Board</span>
+              <ArrowRight className="h-4 w-4 relative z-10" />
+            </Link>
+            <Link
+              href="/register"
+              className="border border-white/10 bg-slate-800/50 hover:bg-slate-700/50 hover:border-white/20 text-slate-200 font-semibold px-8 py-4 rounded-2xl transition-all duration-300 backdrop-blur-sm"
+            >
+              Register Agent
+            </Link>
+          </div>
+
+          {/* Live proof ticker */}
+          <div
+            className="mt-8 max-w-lg mx-auto"
+            style={{ animation: "reveal-up 0.6s ease 0.45s both" }}
+          >
+            <LiveProofTicker />
+          </div>
+
+          {/* Floating shield */}
+          <div className="float absolute -right-8 top-0 opacity-5 pointer-events-none hidden xl:block">
+            <Shield className="h-48 w-48 text-blue-400" />
+          </div>
         </div>
-        <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-          AgentProof
-        </h1>
-        <p className="text-xl text-white font-medium">
-          Trust the Agent, Not Just the Claim.
-        </p>
-        <p className="text-gray-400 text-base max-w-xl mx-auto leading-relaxed">
-          AI agents are managing real money on Solana right now.
-          AgentProof puts every action on-chain — so you can verify
-          what they <em>actually</em> did, not what they claim.
-        </p>
-        <div className="flex items-center justify-center gap-4 pt-2">
-          <Link
+      </section>
+
+      {/* ── Live stats ── */}
+      <section className="py-20">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-8 text-center">Live Protocol Stats</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <StatCard icon={<Users className="h-6 w-6" />} label="Registered Agents" value={stats.total} color="blue" />
+          <StatCard icon={<CheckCircle className="h-6 w-6" />} label="Active Agents" value={stats.total - stats.frozen} color="emerald" />
+          <StatCard icon={<AlertTriangle className="h-6 w-6" />} label="Risk Warnings" value={stats.warnings} color="amber" />
+          <StatCard icon={<Activity className="h-6 w-6" />} label="Frozen / Danger" value={stats.frozen + stats.dangers} color="rose" />
+        </div>
+      </section>
+
+      {/* ── Use-case cards ── */}
+      <section className="py-20">
+        <div className="text-center mb-16">
+          <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">
+            Built for every role in the <span className="gradient-text">agent economy.</span>
+          </h2>
+          <p className="text-xl text-slate-400 max-w-2xl mx-auto">
+            Whether you use, operate, build, or govern AI agents — AgentProof gives you the security, insurance, and trust layer you need.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <UseCaseCard
+            icon={<UserCheck className="h-7 w-7 text-white" />}
+            tag="For Users"
+            title="Use Agents Safely"
+            subtitle="Know exactly what an agent did with your funds"
+            description="Every task an agent executes is verified by 3 independent witness nodes and recorded on-chain. Check proof history, real-time risk score, and staked collateral before you hand over a single SOL."
+            cta="Monitor Agent Behavior"
             href="/monitor"
-            className="bg-purple-600 hover:bg-purple-700 text-white font-semibold px-6 py-2.5 rounded-lg transition-colors flex items-center gap-2"
-          >
-            View Agent Behavior <ArrowRight className="h-4 w-4" />
-          </Link>
-          <Link
+            gradient="from-blue-500 to-cyan-500"
+          />
+          <UseCaseCard
+            icon={<Bot className="h-7 w-7 text-white" />}
+            tag="For Agents"
+            title="Build Your Reputation"
+            subtitle="Every verified task makes you more trustworthy"
+            description="Register on-chain, stake collateral, and let your proof history speak for itself. A strong AgentProof record opens doors to institutional clients and protocol insurance coverage."
+            cta="Register Agent"
             href="/register"
-            className="border border-gray-600 hover:border-purple-500 text-gray-300 hover:text-white font-semibold px-6 py-2.5 rounded-lg transition-colors"
-          >
-            Register Your Agent
-          </Link>
-        </div>
-      </div>
-
-      {/* Two scenario cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <ScenarioCard
-          icon="🏦"
-          tag="Scenario 1"
-          tagColor="text-cyan-400 bg-cyan-900/20 border-cyan-800/50"
-          title="Using an Institution's Agent?"
-          subtitle="e.g. Binance, OKX, or any trading bot"
-          description="You hand over funds to an AI trading agent — but how do you know it executed your strategy faithfully? AgentProof records every on-chain action with independent witness verification, so you can audit what the agent actually did."
-          cta="Monitor Agent Behavior"
-          href="/monitor"
-        />
-        <ScenarioCard
-          icon="🤝"
-          tag="Scenario 2"
-          tagColor="text-purple-400 bg-purple-900/20 border-purple-800/50"
-          title="Hiring Someone Else's Agent?"
-          subtitle="e.g. agent marketplace, DeFi automation"
-          description="Before trusting a stranger's AI agent with your funds, check their on-chain reputation score, staked collateral, and verified task history. If they underperform or act maliciously, their stake gets slashed."
-          cta="Browse Verified Agents"
-          href="/monitor"
-        />
-      </div>
-
-      {/* Why not just a dashboard */}
-      <TrustComparisonSection />
-
-      {/* Live stats */}
-      <div>
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-widest mb-4">
-          Live Protocol Stats
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard
-            icon={<Shield className="h-5 w-5 text-purple-400" />}
-            label="Registered Agents"
-            value={stats.total}
-            color="purple"
+            gradient="from-violet-500 to-purple-500"
           />
-          <StatCard
-            icon={<CheckCircle className="h-5 w-5 text-green-400" />}
-            label="Active Agents"
-            value={stats.total - stats.frozen}
-            color="green"
-          />
-          <StatCard
-            icon={<AlertTriangle className="h-5 w-5 text-yellow-400" />}
-            label="Risk Warnings"
-            value={stats.warnings}
-            color="yellow"
-          />
-          <StatCard
-            icon={<Activity className="h-5 w-5 text-red-400" />}
-            label="Frozen / Danger"
-            value={stats.frozen + stats.dangers}
-            color="red"
-          />
-        </div>
-      </div>
-
-      {/* Quick actions */}
-      <div>
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-widest mb-4">
-          Get Started
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <ActionCard
-            href="/register"
-            title="List Your Agent"
-            description="Stake SOL as collateral, declare capabilities, earn reputation through verified tasks"
-            icon="🤖"
-            badge="Agent Providers"
-          />
-          <ActionCard
+          <UseCaseCard
+            icon={<Code2 className="h-7 w-7 text-white" />}
+            tag="For Developers"
+            title="Integrate Proof into Your Stack"
+            subtitle="One API call to submit and verify agent tasks"
+            description="Use the AgentProof SDK to submit task proofs programmatically. Witness verification, intent checking, and on-chain anchoring happen automatically — your agents become auditable by default."
+            cta="Submit Task Proof"
             href="/verify"
-            title="Submit Task Proof"
-            description="After completing a task, submit on-chain proof — 3 witness nodes independently verify it"
-            icon="✅"
-            badge="After Each Task"
+            gradient="from-emerald-500 to-teal-500"
           />
-          <ActionCard
-            href="/monitor"
-            title="Agent Behavior Dashboard"
-            description="Real-time risk scoring, anomaly detection, and full on-chain audit trail for any agent"
-            icon="🛡️"
-            badge="Always On"
+          <UseCaseCard
+            icon={<Landmark className="h-7 w-7 text-white" />}
+            tag="For Institutions"
+            title="Insurance-Backed Agent Deployment"
+            subtitle="Stake collateral · earn trust score · unlock coverage"
+            description="Deploy AI agents with verifiable accountability. Verified agents with strong track records qualify for protocol insurance — protecting your clients and your reputation when things go wrong."
+            cta="View Reputation Board"
+            href="/leaderboard"
+            gradient="from-rose-500 to-pink-500"
           />
         </div>
-      </div>
+      </section>
 
-      {/* Active alerts */}
+      {/* ── Why not just a dashboard ── */}
+      <section className="py-20">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-16">
+            <div className="inline-flex items-center gap-2 mb-6 bg-gradient-to-br from-blue-500 to-purple-600 w-14 h-14 rounded-2xl justify-center mx-auto" style={{ boxShadow: "rgba(59,130,246,0.4) 0px 10px 40px" }}>
+              <Lock className="h-6 w-6 text-white" />
+            </div>
+            <h2 className="text-4xl md:text-5xl font-bold text-white mb-4">
+              Why not just a <span className="gradient-text">monitoring dashboard?</span>
+            </h2>
+          </div>
+          <div className="glass-card rounded-3xl p-10 border border-white/10">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <ComparisonPoint
+                icon={<Eye className="h-5 w-5" />}
+                label="Data source"
+                bad="Logs written by the agent itself — can be deleted or faked"
+                good="Every action verified by 3 independent witness nodes, stored on-chain"
+              />
+              <ComparisonPoint
+                icon={<Shield className="h-5 w-5" />}
+                label="Who trusts it"
+                bad="Only you — no third party can independently verify"
+                good="Anyone can verify: investors, users, auditors, DAOs"
+              />
+              <ComparisonPoint
+                icon={<Activity className="h-5 w-5" />}
+                label="When things go wrong"
+                bad="No on-chain evidence, no accountability, no recourse"
+                good="Immutable proof on-chain + staked SOL slashed as penalty + protocol insurance eligible"
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Active alerts ── */}
       {alerts.length > 0 && (
-        <div className="bg-gray-900 rounded-xl border border-red-900/50 p-6">
-          <h2 className="text-lg font-semibold text-red-400 mb-4 flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5" />
-            Active Alerts ({alerts.length})
-          </h2>
-          <div className="space-y-2">
-            {alerts.slice(0, 5).map((alert) => (
-              <AlertRow key={alert.agent_id} alert={alert} />
-            ))}
+        <section className="py-12">
+          <div className="max-w-5xl mx-auto">
+            <h2 className="text-2xl font-bold text-rose-400 mb-6 flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5" />
+              Active Alerts ({alerts.length})
+            </h2>
+            <div className="glass-card rounded-3xl border border-rose-500/20 p-6 space-y-2">
+              {alerts.slice(0, 5).map((alert) => (
+                <AlertRow key={alert.agent_id} alert={alert} />
+              ))}
+            </div>
           </div>
-        </div>
+        </section>
       )}
 
-      {loading && (
-        <div className="text-center text-gray-500 py-8">Loading...</div>
-      )}
-
-      {/* Agent list */}
-      {!loading && agents.length > 0 && (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-6">
-          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Shield className="h-5 w-5 text-purple-400" />
-            Verified Agents on Solana ({agents.length})
-          </h2>
-          <div className="space-y-2">
-            {agents.map((agent) => {
-              const isMyAgent = publicKey?.toBase58() === agent.agent_pubkey;
-              return (
-                <Link
-                  key={agent.agent_pubkey}
-                  href={`/agent/${agent.agent_pubkey}`}
-                  className={`flex items-center justify-between py-3 px-3 rounded-lg border transition-colors ${
-                    isMyAgent
-                      ? "border-purple-600 bg-purple-900/20 hover:bg-purple-900/30"
-                      : "border-gray-800 hover:border-purple-600 hover:bg-gray-800/50"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Shield className={`h-4 w-4 shrink-0 ${agent.is_frozen ? "text-red-400" : "text-green-400"}`} />
-                    <span className="font-mono text-sm text-gray-300">
-                      {agent.agent_pubkey.slice(0, 20)}...{agent.agent_pubkey.slice(-6)}
-                    </span>
-                    {isMyAgent && (
-                      <span className="text-xs bg-purple-900/60 text-purple-300 border border-purple-700 px-2 py-0.5 rounded-full">
-                        My Agent
-                      </span>
-                    )}
-                    {agent.is_frozen && (
-                      <span className="text-xs bg-red-900/50 text-red-300 border border-red-800 px-2 py-0.5 rounded-full">
-                        FROZEN
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-6 text-sm text-gray-400 shrink-0">
-                    <span>Score: <span className="text-white font-medium">{agent.credit_score}</span></span>
-                    <span>Stake: <span className="text-white font-medium">{(agent.staked_lamports / 1e9).toFixed(2)} SOL</span></span>
-                    <span>Tasks: <span className="text-white font-medium">{agent.tasks_completed}</span></span>
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-// ── Scenario card ──────────────────────────────────────────────
-function ScenarioCard({
-  icon, tag, tagColor, title, subtitle, description, cta, href,
+// ── Live proof ticker ─────────────────────────────────────────────
+function LiveProofTicker() {
+  const [activeIdx, setActiveIdx] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setActiveIdx((n) => (n + 1) % DEMO_PROOFS.length), 2500);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div className="glass-card rounded-2xl border border-white/8 overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/5 bg-white/[0.02]">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+        <span className="text-xs text-slate-400 font-medium">Live on-chain proofs</span>
+        <span className="ml-auto text-xs text-slate-600 font-mono">devnet</span>
+      </div>
+      <div className="divide-y divide-white/5">
+        {DEMO_PROOFS.map((proof, i) => (
+          <div
+            key={i}
+            className={`flex items-center gap-3 px-4 py-2.5 transition-colors duration-500 ${
+              i === activeIdx ? "bg-blue-500/8" : ""
+            }`}
+          >
+            <span className={`text-xs font-bold w-8 shrink-0 ${GRADE_COLORS_MAP[proof.grade]}`}>
+              {proof.grade}
+            </span>
+            <span className="font-mono text-xs text-slate-500 shrink-0">{proof.agent}</span>
+            <span className="text-xs text-slate-300 flex-1 truncate">{proof.task}</span>
+            <span className="text-xs text-slate-600 shrink-0">{proof.ago}</span>
+            {i === activeIdx && (
+              <CheckCircle className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Use-case card ──────────────────────────────────────────────────
+function UseCaseCard({
+  icon, tag, title, subtitle, description, cta, href, gradient,
 }: {
-  icon: string;
+  icon: React.ReactNode;
   tag: string;
-  tagColor: string;
   title: string;
   subtitle: string;
   description: string;
   cta: string;
   href: string;
+  gradient: string;
 }) {
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 flex flex-col gap-4">
+    <div className="glass-card-hover rounded-3xl p-8 flex flex-col gap-6 overflow-hidden relative border border-white/10">
       <div className="flex items-start justify-between">
-        <span className="text-3xl">{icon}</span>
-        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${tagColor}`}>
+        <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center shadow-lg flex-shrink-0`}>
+          {icon}
+        </div>
+        <span className="text-xs font-semibold bg-white/10 text-slate-300 border border-white/10 px-3 py-1.5 rounded-full">
           {tag}
         </span>
       </div>
       <div>
-        <h3 className="font-bold text-lg text-white">{title}</h3>
-        <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>
+        <h3 className="font-bold text-xl text-white mb-1">{title}</h3>
+        <p className="text-sm text-slate-500">{subtitle}</p>
       </div>
-      <p className="text-sm text-gray-400 leading-relaxed flex-1">{description}</p>
+      <p className="text-slate-400 leading-relaxed flex-1">{description}</p>
       <Link
         href={href}
-        className="flex items-center gap-1.5 text-sm text-purple-400 hover:text-purple-300 font-medium transition-colors"
+        className="inline-flex items-center gap-2 text-sm font-semibold text-blue-400 hover:text-blue-300 transition-colors duration-200"
       >
-        {cta} <ArrowRight className="h-3.5 w-3.5" />
+        {cta} <ArrowRight className="h-4 w-4" />
       </Link>
     </div>
   );
 }
 
-// ── Trust comparison ───────────────────────────────────────────
-function TrustComparisonSection() {
-  return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800 p-6">
-      <div className="flex items-center gap-2 mb-5">
-        <Lock className="h-5 w-5 text-purple-400" />
-        <h2 className="font-semibold text-lg">Why not just a monitoring dashboard?</h2>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <ComparisonPoint
-          icon={<Eye className="h-4 w-4 text-gray-400" />}
-          label="Data source"
-          bad="Logs written by the agent itself — can be deleted or faked"
-          good="Every action verified by 3 independent witness nodes, stored on-chain"
-        />
-        <ComparisonPoint
-          icon={<Shield className="h-4 w-4 text-gray-400" />}
-          label="Who trusts it"
-          bad="Only you — no third party can independently verify"
-          good="Anyone can verify: investors, users, auditors, DAOs"
-        />
-        <ComparisonPoint
-          icon={<Activity className="h-4 w-4 text-gray-400" />}
-          label="When things go wrong"
-          bad="No on-chain evidence, no accountability, no recourse"
-          good="Immutable proof on-chain + staked SOL can be slashed as penalty"
-        />
-      </div>
-    </div>
-  );
-}
-
+// ── Comparison point ─────────────────────────────────────────────
 function ComparisonPoint({
   icon, label, bad, good,
 }: {
@@ -321,21 +328,23 @@ function ComparisonPoint({
   good: string;
 }) {
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-widest">
         {icon} {label}
       </div>
-      <div className="bg-red-900/10 border border-red-900/30 rounded-lg p-3 text-xs text-gray-400 leading-relaxed">
-        <span className="text-red-400 font-semibold">✗ Regular dashboard: </span>{bad}
+      <div className="bg-rose-500/5 border border-rose-500/20 rounded-2xl p-4 text-sm text-slate-400 leading-relaxed">
+        <span className="text-rose-400 font-semibold block mb-1">✗ Regular dashboard</span>
+        {bad}
       </div>
-      <div className="bg-green-900/10 border border-green-900/30 rounded-lg p-3 text-xs text-gray-400 leading-relaxed">
-        <span className="text-green-400 font-semibold">✓ AgentProof: </span>{good}
+      <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4 text-sm text-slate-400 leading-relaxed">
+        <span className="text-emerald-400 font-semibold block mb-1">✓ AgentProof</span>
+        {good}
       </div>
     </div>
   );
 }
 
-// ── Stat card ──────────────────────────────────────────────────
+// ── Stat card ────────────────────────────────────────────────────
 function StatCard({
   icon, label, value, color,
 }: {
@@ -344,64 +353,56 @@ function StatCard({
   value: number;
   color: string;
 }) {
-  const bgMap: Record<string, string> = {
-    purple: "border-purple-800/50",
-    green: "border-green-800/50",
-    yellow: "border-yellow-800/50",
-    red: "border-red-800/50",
+  const [displayed, setDisplayed] = useState(0);
+  useEffect(() => {
+    if (value === 0) { setDisplayed(0); return; }
+    const duration = 800;
+    const steps = 30;
+    const step = value / steps;
+    let current = 0;
+    const t = setInterval(() => {
+      current += step;
+      if (current >= value) { setDisplayed(value); clearInterval(t); }
+      else setDisplayed(Math.round(current));
+    }, duration / steps);
+    return () => clearInterval(t);
+  }, [value]);
+  const palette: Record<string, { icon: string; bg: string; border: string; shadow: string }> = {
+    blue:    { icon: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/20",    shadow: "rgba(59,130,246,0.2) 0px 10px 15px -3px" },
+    emerald: { icon: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", shadow: "rgba(52,211,153,0.2) 0px 10px 15px -3px" },
+    amber:   { icon: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/20",   shadow: "rgba(245,158,11,0.2) 0px 10px 15px -3px" },
+    rose:    { icon: "text-rose-400",    bg: "bg-rose-500/10",    border: "border-rose-500/20",    shadow: "rgba(244,63,94,0.2) 0px 10px 15px -3px" },
   };
+  const p = palette[color] ?? palette.blue;
+
   return (
-    <div className={`bg-gray-900 rounded-xl border ${bgMap[color] ?? "border-gray-800"} p-4`}>
-      <div className="flex items-center gap-2 mb-2">
+    <div
+      className={`glass-card rounded-3xl border p-6 ${p.border} transition-transform duration-300 hover:scale-105`}
+      style={{ boxShadow: `rgba(0,0,0,0) 0 0 0 0, rgba(0,0,0,0) 0 0 0 0, ${p.shadow}` }}
+    >
+      <div className={`inline-flex p-3 rounded-2xl mb-4 ${p.bg} ${p.icon}`}>
         {icon}
-        <span className="text-sm text-gray-400">{label}</span>
       </div>
-      <div className="text-3xl font-bold">{value}</div>
+      <div className="text-4xl font-extrabold text-white mb-2">{displayed}</div>
+      <div className="text-sm text-slate-400">{label}</div>
     </div>
   );
 }
 
-// ── Action card ────────────────────────────────────────────────
-function ActionCard({
-  href, title, description, icon, badge,
-}: {
-  href: string;
-  title: string;
-  description: string;
-  icon: string;
-  badge: string;
-}) {
-  return (
-    <Link
-      href={href}
-      className="bg-gray-900 rounded-xl border border-gray-800 p-6 hover:border-purple-600 transition-colors group flex flex-col gap-3"
-    >
-      <div className="flex items-start justify-between">
-        <div className="text-3xl">{icon}</div>
-        <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded-full">{badge}</span>
-      </div>
-      <h3 className="font-semibold text-lg group-hover:text-purple-400 transition-colors">
-        {title}
-      </h3>
-      <p className="text-sm text-gray-400 leading-relaxed">{description}</p>
-    </Link>
-  );
-}
-
-// ── Alert row ──────────────────────────────────────────────────
+// ── Alert row ────────────────────────────────────────────────────
 function AlertRow({ alert }: { alert: RiskScore }) {
-  const levelColor = alert.level === "danger" ? "text-red-400" : "text-yellow-400";
+  const isDanger = alert.level === "danger";
   return (
-    <div className="flex items-center justify-between py-2 border-b border-gray-800 last:border-0">
+    <div className={`flex items-center justify-between py-3 px-4 rounded-2xl border ${
+      isDanger ? "border-rose-500/20 bg-rose-500/5" : "border-amber-500/20 bg-amber-500/5"
+    }`}>
       <div>
-        <span className="font-mono text-sm text-gray-300">
+        <span className="font-mono text-sm text-slate-300">
           {alert.agent_id.substring(0, 20)}...
         </span>
-        <div className="text-xs text-gray-500 mt-0.5">
-          {alert.reasons.join(" · ")}
-        </div>
+        <div className="text-xs text-slate-500 mt-0.5">{alert.reasons.join(" · ")}</div>
       </div>
-      <div className={`font-bold ${levelColor}`}>
+      <div className={`font-bold text-sm ${isDanger ? "text-rose-400" : "text-amber-400"}`}>
         {alert.score.toFixed(0)} / 100
       </div>
     </div>

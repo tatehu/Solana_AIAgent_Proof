@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
   PublicKey,
@@ -11,17 +11,17 @@ import { agentProof } from "@/lib/agentproof-sdk";
 import type { ProofResult } from "@/lib/agentproof-sdk";
 import { PROGRAM_ID, WITNESS_NODE_URL } from "@/lib/solana";
 import { TASK_TYPES } from "@/lib/task-types";
+import { CheckCircle, XCircle, Link as LinkIcon, AlertTriangle, Loader2, Shield, Cpu, GitMerge } from "lucide-react";
 
 // Anchor discriminator = sha256("global:submit_proof")[0..8]
 async function submitProofDiscriminator(): Promise<Uint8Array> {
   const hash = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode("global:submit_proof")
+    new TextEncoder().encode("global:submit_proof").buffer as ArrayBuffer
   );
   return new Uint8Array(hash).slice(0, 8);
 }
 
-// Map task type string to u8 (must match Rust enum order)
 const TASK_TYPE_U8: Record<string, number> = {
   SOLANA_SWAP: 1,
   DATA_ANALYSIS: 2,
@@ -36,23 +36,18 @@ function encodeU64LE(value: number): Buffer {
   return buf;
 }
 
-// task_id: string → 32-byte Uint8Array
-// 64-char hex → decode directly; otherwise SHA-256 the string
 async function taskIdToBytes(taskId: string): Promise<Uint8Array> {
   if (/^[0-9a-fA-F]{64}$/.test(taskId)) {
     return Buffer.from(taskId, "hex");
   }
   const hash = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(taskId)
+    new TextEncoder().encode(taskId).buffer as ArrayBuffer
   );
   return new Uint8Array(hash);
 }
 
-// tx signature base58 → 64 bytes
 function txSigToBytes(sig: string): Uint8Array {
-  // base58 decode via @solana/web3.js bs58
-  // PublicKey uses 32 bytes; for 64-byte sig we build it manually
   const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const dec = Array.from(sig).reduce((acc, c) => {
     const idx = chars.indexOf(c);
@@ -62,38 +57,6 @@ function txSigToBytes(sig: string): Uint8Array {
   return Buffer.from(hex, "hex");
 }
 
-// Build submit_proof instruction data (Borsh layout matching SubmitProofParams)
-// discriminator(8) + task_id(32) + instruction_hash(32) + input_hash(32)
-// + output_hash(32) + tx_signature(64) + slot(u64 LE) + task_type(u8)
-// + witnesses([Pubkey;3] = 3×32 bytes)
-async function buildSubmitProofData(
-  taskIdBytes: Uint8Array,
-  txSigBytes: Uint8Array,
-  slot: number,
-  taskType: number,
-  witnesses: PublicKey[]
-): Promise<Buffer> {
-  const disc = await submitProofDiscriminator();
-  const zeros32 = Buffer.alloc(32);
-
-  const witnessBufs = witnesses.map((w) => w.toBuffer());
-
-  return Buffer.concat([
-    Buffer.from(disc),
-    Buffer.from(taskIdBytes),    // instruction_hash (reuse task_id as placeholder)
-    zeros32,                      // input_hash
-    zeros32,                      // output_hash
-    Buffer.from(txSigBytes),     // tx_signature (64 bytes)
-    encodeU64LE(slot),           // slot
-    Buffer.from([taskType]),     // task_type (u8)
-    ...witnessBufs,              // witnesses [Pubkey;3]
-  ]);
-}
-
-// Re-encoded: Anchor's SubmitProofParams is a struct passed as single arg
-// Layout: discriminator(8) + SubmitProofParams borsh:
-//   task_id[32] + instruction_hash[32] + input_hash[32] + output_hash[32]
-//   + tx_signature[64] + slot u64 + task_type u8 + witnesses [Pubkey;3]
 async function buildSubmitProofIxData(
   taskIdBytes: Uint8Array,
   txSigBytes: Uint8Array,
@@ -106,14 +69,14 @@ async function buildSubmitProofIxData(
 
   return Buffer.concat([
     Buffer.from(disc),
-    Buffer.from(taskIdBytes),   // task_id
-    zeros32,                    // instruction_hash
-    zeros32,                    // input_hash
-    zeros32,                    // output_hash
-    Buffer.from(txSigBytes),   // tx_signature (64 bytes)
-    encodeU64LE(slot),         // slot
-    Buffer.from([taskType]),   // task_type
-    ...witnesses.map((w) => w.toBuffer()), // witnesses [Pubkey;3]
+    Buffer.from(taskIdBytes),
+    zeros32,
+    zeros32,
+    zeros32,
+    Buffer.from(txSigBytes),
+    encodeU64LE(slot),
+    Buffer.from([taskType]),
+    ...witnesses.map((w) => w.toBuffer()),
   ]);
 }
 
@@ -127,20 +90,34 @@ export default function VerifyPage() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
 
-  const [taskId, setTaskId] = useState("");
+  const [taskId, setTaskId] = useState(() => crypto.randomUUID());
   const [agentPubkeyInput, setAgentPubkeyInput] = useState("");
   const [txSig, setTxSig] = useState("");
   const [taskType, setTaskType] = useState("SOLANA_SWAP");
   const [slot, setSlot] = useState("");
+  const [fetchingSlot, setFetchingSlot] = useState(false);
   const [result, setResult] = useState<ProofResult | null>(null);
   const [chainProof, setChainProof] = useState<ChainProofStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState<string>("");
   const [error, setError] = useState("");
 
+  const fetchSlotFromTx = useCallback(async (sig: string) => {
+    if (!sig || sig.length < 80) return;
+    setFetchingSlot(true);
+    try {
+      const tx = await connection.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      if (tx?.slot) setSlot(String(tx.slot));
+    } catch {
+      // ignore — user can fill manually
+    } finally {
+      setFetchingSlot(false);
+    }
+  }, [connection]);
+
   async function handleVerify() {
-    if (!taskId || !txSig) {
-      setError("Please fill in Task ID and Tx Signature");
+    if (!txSig) {
+      setError("Please fill in the Tx Signature");
       return;
     }
     if (!publicKey) {
@@ -156,16 +133,12 @@ export default function VerifyPage() {
     try {
       const agentPubkey = agentPubkeyInput || publicKey.toBase58();
 
-      // Step 1: fetch witness pubkeys from witness node
       setStep("Fetching witness pubkeys...");
       const pubkeysRes = await fetch(`${WITNESS_NODE_URL}/api/v1/pubkeys`);
       if (!pubkeysRes.ok) throw new Error("Witness node unreachable — is it running?");
-      const { witnesses: witnessPubkeyStrs } = await pubkeysRes.json() as {
-        witnesses: string[];
-      };
+      const { witnesses: witnessPubkeyStrs } = await pubkeysRes.json() as { witnesses: string[] };
       const witnesses = witnessPubkeyStrs.map((s) => new PublicKey(s));
 
-      // Step 2: compute PDA accounts
       const taskIdBytes = await taskIdToBytes(taskId);
       const txSigBytes = txSigToBytes(txSig);
       const slotNum = slot ? parseInt(slot) : 0;
@@ -175,8 +148,6 @@ export default function VerifyPage() {
         [Buffer.from("proof"), Buffer.from(taskIdBytes)],
         PROGRAM_ID
       );
-      // agent_record PDA must use the signer (publicKey), not agentPubkeyInput,
-      // because the Rust constraint is seeds = [b"agent", agent.key().as_ref()].
       const [agentRecordPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("agent"), publicKey.toBuffer()],
         PROGRAM_ID
@@ -186,64 +157,68 @@ export default function VerifyPage() {
         PROGRAM_ID
       );
 
-      // Step 3: pre-check that agentRecord exists (prevents cryptic simulation errors)
       setStep("Checking agent registration...");
       const agentAccountInfo = await connection.getAccountInfo(agentRecordPda);
       if (!agentAccountInfo) {
         setChainProof({
           txSig: "",
           status: "error",
-          error: "Your wallet is not registered as an agent — go to List Agent first.",
+          error: "Your wallet is not registered as an agent — go to Register Agent first.",
         });
-        // Still proceed to off-chain witness verification
       } else {
-      // Step 4: build and send submit_proof transaction
-      setStep("Submitting proof on-chain...");
-      const ixData = await buildSubmitProofIxData(
-        taskIdBytes,
-        txSigBytes,
-        slotNum,
-        taskTypeU8,
-        witnesses
-      );
+        setStep("Submitting proof on-chain...");
+        const ixData = await buildSubmitProofIxData(taskIdBytes, txSigBytes, slotNum, taskTypeU8, witnesses);
 
-      const submitIx = new TransactionInstruction({
-        programId: PROGRAM_ID,
-        keys: [
-          { pubkey: taskProofPda, isSigner: false, isWritable: true },
-          { pubkey: agentRecordPda, isSigner: false, isWritable: true },
-          { pubkey: witnessPoolPda, isSigner: false, isWritable: false },
-          { pubkey: publicKey, isSigner: true, isWritable: true },
-          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        ],
-        data: ixData,
-      });
+        const submitIx = new TransactionInstruction({
+          programId: PROGRAM_ID,
+          keys: [
+            { pubkey: taskProofPda, isSigner: false, isWritable: true },
+            { pubkey: agentRecordPda, isSigner: false, isWritable: true },
+            { pubkey: witnessPoolPda, isSigner: false, isWritable: false },
+            { pubkey: publicKey, isSigner: true, isWritable: true },
+            { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          ],
+          data: ixData,
+        });
 
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-      const tx = new Transaction();
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = publicKey;
-      tx.add(submitIx);
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+        const tx = new Transaction();
+        tx.recentBlockhash = blockhash;
+        tx.feePayer = publicKey;
+        tx.add(submitIx);
 
-      let chainTxSig: string | undefined;
-      try {
-        chainTxSig = await sendTransaction(tx, connection);
-        await connection.confirmTransaction(
-          { signature: chainTxSig, blockhash, lastValidBlockHeight },
-          "confirmed"
-        );
-        setChainProof({ txSig: chainTxSig, status: "submitted" });
-      } catch (chainErr) {
-        const msg = chainErr instanceof Error ? chainErr.message : String(chainErr);
-        const friendlyMsg = msg.includes("AccountNotInitialized") || msg.includes("account not found")
-          ? "Your wallet is not registered as an agent — go to List Agent first."
-          : msg;
-        setChainProof({ txSig: "", status: "error", error: friendlyMsg });
-        // Continue to witness node for off-chain verification anyway
+        // Pre-simulate to get real program logs before Phantom swallows them
+        setStep("Simulating transaction...");
+        const simResult = await connection.simulateTransaction(tx);
+        if (simResult.value.err) {
+          const logs = simResult.value.logs ?? [];
+          const programLine = logs.findLast((l) =>
+            l.includes("Error") || l.includes("failed") || l.includes("AnchorError") || l.includes("custom program error")
+          );
+          const rawMsg = programLine
+            ? programLine.replace(/^Program \S+ /, "")
+            : JSON.stringify(simResult.value.err);
+          const friendlyMsg =
+            rawMsg.includes("AccountNotInitialized") || rawMsg.includes("account not found")
+              ? "Your wallet is not registered as an agent — go to Register Agent first."
+              : rawMsg.includes("already in use")
+              ? "This task ID was already submitted. Refresh the page and try again."
+              : rawMsg;
+          setChainProof({ txSig: "", status: "error", error: `Simulation failed: ${friendlyMsg}` });
+        } else {
+          setStep("Submitting proof on-chain...");
+          try {
+            const chainTxSig = await sendTransaction(tx, connection);
+            await connection.confirmTransaction({ signature: chainTxSig, blockhash, lastValidBlockHeight }, "confirmed");
+            setChainProof({ txSig: chainTxSig, status: "submitted" });
+          } catch (chainErr: unknown) {
+            const msg = chainErr instanceof Error ? chainErr.message : "Transaction failed";
+            const friendlyMsg = msg.includes("User rejected") ? "Transaction cancelled." : msg;
+            setChainProof({ txSig: "", status: "error", error: friendlyMsg });
+          }
+        }
       }
-      } // end else (agent registered)
 
-      // Step 5: call witness node HTTP API for off-chain verification + trigger chain signing
       setStep("Sending to witness node...");
       const proof = await agentProof.verifyProof({
         task_id: taskId,
@@ -266,213 +241,219 @@ export default function VerifyPage() {
   }
 
   return (
-    <div className="max-w-xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-8 py-8">
+
+      {/* ── Page header ── */}
       <div>
-        <h1 className="text-2xl font-bold">Verify Task</h1>
-        <p className="text-gray-400 mt-1">
-          Submit a task proof to witness nodes for on-chain verification.
+        <h1 className="text-4xl font-bold text-white mb-2">Submit Task Proof</h1>
+        <p className="text-slate-400">
+          Record any agent task on-chain — witnessed, signed, and permanently verifiable.
         </p>
       </div>
 
-      {/* Verification pipeline banner */}
-      <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 text-xs space-y-2">
-        <div className="text-gray-400 font-semibold uppercase tracking-wide text-xs mb-2">Verification Pipeline</div>
-        <div className="flex items-start gap-3">
-          <span className="bg-purple-900/50 text-purple-300 rounded-full w-5 h-5 flex items-center justify-center shrink-0 font-bold">1</span>
-          <div>
-            <span className="text-white font-medium">Chain Verification</span>
-            <span className="text-gray-500 ml-2">Helius confirms the tx_signature exists on-chain</span>
+      {/* ── Verification pipeline ── */}
+      <div className="border border-white/10 rounded-2xl px-5 py-3 flex items-center gap-1 flex-wrap">
+        {[
+          { icon: <Shield className="h-3.5 w-3.5" />, color: "blue", label: "Chain Verify" },
+          { icon: <Cpu className="h-3.5 w-3.5" />, color: "purple", label: "Intent Check" },
+          { icon: <GitMerge className="h-3.5 w-3.5" />, color: "emerald", label: "2-of-3 Sign" },
+        ].map(({ icon, color, label }, i) => (
+          <div key={label} className="flex items-center gap-1">
+            {i > 0 && <span className="text-white/20 text-xs mx-1">→</span>}
+            <div className={`flex items-center gap-1.5 text-xs font-medium text-${color}-400`}>
+              {icon}
+              {label}
+            </div>
           </div>
-        </div>
-        <div className="flex items-start gap-3">
-          <span className="bg-blue-900/50 text-blue-300 rounded-full w-5 h-5 flex items-center justify-center shrink-0 font-bold">2</span>
-          <div>
-            <span className="text-white font-medium">Intent Verification</span>
-            <span className="text-gray-500 ml-2">Claude Haiku checks if the action matches the agent's declared capability</span>
-          </div>
-        </div>
-        <div className="flex items-start gap-3">
-          <span className="bg-green-900/50 text-green-300 rounded-full w-5 h-5 flex items-center justify-center shrink-0 font-bold">3</span>
-          <div>
-            <span className="text-white font-medium">2-of-3 Threshold</span>
-            <span className="text-gray-500 ml-2">Witness nodes sign on-chain → Escrow auto-settles, EWMA credit score updates</span>
-          </div>
-        </div>
-        <div className="text-gray-600 text-xs pt-1 border-t border-gray-800">
-          ℹ️ In production, agents submit proofs automatically via the AgentProof SDK — this page is for manual testing.
-        </div>
+        ))}
+        <span className="ml-auto text-slate-600 text-xs hidden sm:block">Manual testing mode</span>
       </div>
 
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 space-y-4">
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">Task ID (hex or string)</label>
-          <input
-            type="text"
-            value={taskId}
-            onChange={(e) => setTaskId(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm"
-            placeholder="task_001 or 32-byte hex"
-          />
-        </div>
+      {/* ── Form ── */}
+      <div className="glass-card rounded-3xl border border-white/10 p-8 space-y-5">
 
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-slate-400">
             Agent Pubkey{" "}
-            <span className="text-gray-500">(leave blank to use connected wallet)</span>
+            <span className="text-slate-600 font-normal">(leave blank to use connected wallet)</span>
           </label>
           <input
             type="text"
             value={agentPubkeyInput}
             onChange={(e) => setAgentPubkeyInput(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm"
+            className="input-field font-mono"
             placeholder={publicKey?.toBase58() ?? "Connect wallet or paste pubkey"}
           />
         </div>
 
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">
-            Tx Signature (base58)
-          </label>
+        <div className="space-y-1">
+          <label className="block text-sm font-medium text-slate-400">Tx Signature (base58)</label>
           <input
             type="text"
             value={txSig}
             onChange={(e) => setTxSig(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm"
+            onBlur={(e) => fetchSlotFromTx(e.target.value)}
+            className="input-field font-mono"
             placeholder="Solana transaction signature"
           />
+          <p className="text-xs text-slate-600">Slot will be auto-filled when you paste a valid signature.</p>
         </div>
 
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">
-            Slot <span className="text-gray-500">(from Explorer, tx detail page)</span>
-          </label>
-          <input
-            type="number"
-            value={slot}
-            onChange={(e) => setSlot(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white font-mono text-sm"
-            placeholder="e.g. 123456789"
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm text-gray-400 mb-1">Task Type</label>
-          <select
-            value={taskType}
-            onChange={(e) => setTaskType(e.target.value)}
-            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white"
-          >
-            {TASK_TYPES.map((t) => (
-              <option key={t.value} value={t.value}>{t.label}</option>
-            ))}
-          </select>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-slate-400 flex items-center gap-2">
+              Slot
+              {fetchingSlot && <Loader2 className="h-3 w-3 animate-spin text-slate-500" />}
+              {!fetchingSlot && <span className="text-slate-600 font-normal">(auto-filled from tx)</span>}
+            </label>
+            <input
+              type="number"
+              value={slot}
+              onChange={(e) => setSlot(e.target.value)}
+              className="input-field font-mono"
+              placeholder="e.g. 123456789"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-slate-400">Task Type</label>
+            <select
+              value={taskType}
+              onChange={(e) => setTaskType(e.target.value)}
+              className="input-field"
+            >
+              {TASK_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {!publicKey && (
-          <p className="text-yellow-400 text-sm">
-            ⚠️ Connect your Phantom wallet (Devnet) to submit proof on-chain
-          </p>
+          <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-2xl px-4 py-3 text-amber-400 text-sm">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Connect your Phantom wallet (Devnet) to submit proof on-chain
+          </div>
         )}
 
         <button
           onClick={handleVerify}
           disabled={loading}
-          className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 text-white font-semibold py-3 rounded-lg transition-colors"
+          className="gradient-btn w-full text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
         >
-          {loading ? step || "Processing..." : "Submit for Verification"}
+          {loading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {step || "Processing..."}
+            </>
+          ) : (
+            "Submit for Verification"
+          )}
         </button>
 
-        {/* Chain submit_proof result */}
+        {/* ── Chain proof result ── */}
         {chainProof && (
-          <div
-            className={`rounded-lg p-3 border text-sm ${
-              chainProof.status === "submitted"
-                ? "bg-blue-900/20 border-blue-700"
-                : "bg-yellow-900/20 border-yellow-700"
-            }`}
-          >
+          <div className={`rounded-2xl p-4 border text-sm ${
+            chainProof.status === "submitted"
+              ? "bg-blue-500/10 border-blue-500/20"
+              : "bg-amber-500/10 border-amber-500/20"
+          }`}>
             {chainProof.status === "submitted" ? (
               <>
-                <div className="font-bold text-blue-300">
-                  🔗 Proof submitted on-chain
+                <div className="flex items-center gap-2 font-semibold text-blue-400 mb-2">
+                  <LinkIcon className="h-4 w-4" />
+                  Proof submitted on-chain
                 </div>
                 <a
                   href={`https://explorer.solana.com/tx/${chainProof.txSig}?cluster=devnet`}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-xs text-blue-400 underline mt-1 block"
+                  className="text-xs text-blue-400 hover:text-blue-300 underline block mb-1"
                 >
                   View submit_proof tx →
                 </a>
-                <div className="text-xs text-gray-400 mt-1">
+                <div className="text-xs text-slate-500">
                   Witness nodes will call witness_sign × 3 (2-of-3 threshold → auto-settle)
                 </div>
               </>
             ) : (
-              <div className="text-yellow-300">
-                ⚠️ On-chain submit skipped: {chainProof.error}
+              <div className="flex items-start gap-2 text-amber-400">
+                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                On-chain submit skipped: {chainProof.error}
               </div>
             )}
           </div>
         )}
 
-        {/* Witness node verification result */}
+        {/* ── Witness verification result ── */}
         {result && (
-          <div
-            className={`rounded-lg p-4 border ${
-              result.status === "verified"
-                ? "bg-green-900/20 border-green-700"
-                : "bg-red-900/20 border-red-700"
-            }`}
-          >
-            <div className="font-bold text-lg mb-2">
-              {result.status === "verified" ? "✅ Witness Verified" : "❌ Rejected"}
+          <div className={`rounded-2xl p-5 border ${
+            result.status === "verified"
+              ? "bg-emerald-500/10 border-emerald-500/20"
+              : "bg-rose-500/10 border-rose-500/20"
+          }`}>
+            <div className={`flex items-center gap-2 font-bold text-lg mb-4 ${
+              result.status === "verified" ? "text-emerald-400" : "text-rose-400"
+            }`}>
+              {result.status === "verified"
+                ? <CheckCircle className="h-5 w-5" />
+                : <XCircle className="h-5 w-5" />
+              }
+              {result.status === "verified" ? "Witness Verified" : "Rejected"}
             </div>
-            <div className="text-sm text-gray-400">
-              Task ID: <span className="font-mono">{result.task_id}</span>
-            </div>
-            <div className="text-sm text-gray-400 mt-1">
-              Witnesses: {result.signatures.length}
-            </div>
-            {result.signatures.map((s, i) => (
-              <div key={i} className="text-sm mt-2 border-t border-gray-700 pt-2">
-                <span className={s.approved ? "text-green-400" : "text-red-400"}>
-                  {s.approved ? "✅" : "❌"} Witness {i + 1}
-                </span>
-                {s.reason && (
-                  <div className="text-yellow-300 mt-0.5 font-mono text-xs break-all">
-                    {s.reason}
-                  </div>
-                )}
+
+            <div className="space-y-1 text-sm mb-4">
+              <div className="text-slate-400">
+                Task ID: <span className="font-mono text-slate-200">{result.task_id}</span>
               </div>
-            ))}
+              <div className="text-slate-400">
+                Witnesses: <span className="text-slate-200">{result.signatures.length}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {result.signatures.map((s, i) => (
+                <div key={i} className={`rounded-xl px-4 py-2.5 border text-sm flex items-center gap-2 ${
+                  s.approved
+                    ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                    : "bg-rose-500/10 border-rose-500/20 text-rose-400"
+                }`}>
+                  {s.approved ? <CheckCircle className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}
+                  <span className="font-medium">Witness {i + 1}</span>
+                  {s.reason && <span className="text-xs font-mono text-slate-400 ml-1 truncate">{s.reason}</span>}
+                </div>
+              ))}
+            </div>
+
             {result.intent_result && (
-              <div className={`mt-4 p-4 rounded-lg border ${
+              <div className={`mt-4 rounded-2xl p-4 border ${
                 result.intent_result.aligned
-                  ? 'bg-green-900/20 border-green-700'
-                  : 'bg-red-900/20 border-red-700'
+                  ? "bg-emerald-500/10 border-emerald-500/20"
+                  : "bg-rose-500/10 border-rose-500/20"
               }`}>
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-lg">{result.intent_result.aligned ? '✅' : '❌'}</span>
-                  <div>
-                    <span className="font-semibold text-white text-sm">
-                      Intent Verification: {result.intent_result.aligned ? 'Aligned with declared capability' : 'Intent mismatch — proof rejected'}
-                    </span>
-                    <span className={`ml-2 text-xs font-medium ${result.intent_result.aligned ? 'text-green-400' : 'text-red-400'}`}>
-                      {Math.round(result.intent_result.confidence * 100)}% confidence
-                    </span>
-                  </div>
+                  {result.intent_result.aligned
+                    ? <CheckCircle className="h-4 w-4 text-emerald-400" />
+                    : <XCircle className="h-4 w-4 text-rose-400" />
+                  }
+                  <span className={`font-semibold text-sm ${result.intent_result.aligned ? "text-emerald-400" : "text-rose-400"}`}>
+                    Intent {result.intent_result.aligned ? "Aligned" : "Mismatch"}
+                  </span>
+                  <span className="text-xs text-slate-500 ml-auto">
+                    {Math.round(result.intent_result.confidence * 100)}% confidence
+                  </span>
                 </div>
-                <p className="text-gray-300 text-sm leading-relaxed">{result.intent_result.reason}</p>
-                <div className="text-gray-600 text-xs mt-2">Powered by Claude Haiku</div>
+                <p className="text-slate-400 text-sm leading-relaxed">{result.intent_result.reason}</p>
+                <div className="text-slate-600 text-xs mt-2">Powered by Claude Haiku</div>
               </div>
             )}
           </div>
         )}
 
+        {/* ── Error ── */}
         {error && (
-          <div className="bg-red-900/30 border border-red-700 rounded-lg p-3 text-red-300 text-sm">
-            ❌ {error}
+          <div className="flex items-start gap-2 bg-rose-500/10 border border-rose-500/20 rounded-2xl px-4 py-3 text-rose-400 text-sm">
+            <XCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            {error}
           </div>
         )}
       </div>

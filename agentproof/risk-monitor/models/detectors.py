@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 from collections import deque
 import time
 
@@ -15,6 +15,16 @@ class ProofRecord:
     ata_created: int = 0          # 本次任务创建的 ATA 账户数
     sol_delta: float = 0.0        # SOL 余额变化（负数=减少）
     slot: int = 0
+
+
+@dataclass
+class ChainStats:
+    """来自链上 AgentRecord 的汇总统计（已结算的真实数据）"""
+    tasks_completed: int = 0
+    tasks_failed: int = 0
+    reputation_score: int = 100
+    is_frozen: bool = False
+    staked_lamports: int = 0
 
 
 @dataclass
@@ -106,11 +116,44 @@ class OutputDriftDetector:
             return 0.0
         recent = proofs[-30:]
         hashes = [p.output_hash for p in recent]
-        # 简单统计：如果最近10次输出都是全新哈希（无规律），可能异常
-        # 实际生产中可用向量化嵌入 + 聚类算法
         recent_10 = set(hashes[-10:])
         historical = set(hashes[:-10])
         overlap = len(recent_10 & historical)
         if overlap == 0 and len(recent_10) > 5:
             return 15.0
         return 0.0
+
+
+class ChainStatsDetector:
+    """
+    基于链上 AgentRecord 汇总数据的基线风险检测。
+    弥补 TaskProof 数量不足时其他检测器无数据可分析的缺陷。
+    """
+
+    def analyze(self, stats: Optional[ChainStats]) -> tuple[float, List[str]]:
+        """返回 (风险贡献分 0-40, reasons)"""
+        if stats is None:
+            return 0.0, []
+
+        reasons: List[str] = []
+        score = 0.0
+
+        total = stats.tasks_completed + stats.tasks_failed
+        if total >= 5:
+            fail_rate = stats.tasks_failed / total
+            if fail_rate > 0.5:
+                score += min(40.0, fail_rate * 60)
+                reasons.append(f"链上失败率: {fail_rate:.1%} ({stats.tasks_failed}/{total})")
+            elif fail_rate > 0.3:
+                score += min(20.0, fail_rate * 40)
+                reasons.append(f"链上失败率偏高: {fail_rate:.1%}")
+
+        if stats.reputation_score < 50:
+            score += min(20.0, (50 - stats.reputation_score) * 0.5)
+            reasons.append(f"声誉分偏低: {stats.reputation_score}/1000")
+
+        if stats.staked_lamports == 0 and total > 0:
+            score += 15.0
+            reasons.append("质押已清零（可能被 slash）")
+
+        return score, reasons

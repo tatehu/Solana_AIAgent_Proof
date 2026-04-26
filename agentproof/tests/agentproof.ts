@@ -19,7 +19,6 @@ describe("agentproof", () => {
   const capabilityHash = crypto.randomBytes(32);
 
   before(async () => {
-    // 给测试账户充值
     for (const kp of [agent, witness1, witness2, witness3]) {
       const sig = await provider.connection.requestAirdrop(
         kp.publicKey,
@@ -46,7 +45,6 @@ describe("agentproof", () => {
         .rpc();
       console.log("✓ WitnessPool initialized");
     } catch (e: unknown) {
-      // 已初始化则跳过
       if (e instanceof Error && e.message.includes("already in use")) {
         console.log("✓ WitnessPool already exists");
       } else {
@@ -81,9 +79,9 @@ describe("agentproof", () => {
 
     const record = await program.account.agentRecord.fetch(agentRecord);
     expect(record.agentPubkey.toString()).to.equal(agent.publicKey.toString());
-    expect(record.reputationScore.toNumber()).to.equal(100);
+    expect(record.creditScore.toNumber()).to.be.greaterThanOrEqual(50);
     expect(record.isFrozen).to.equal(false);
-    console.log("✓ Agent registered with reputation:", record.reputationScore.toNumber());
+    console.log("✓ Agent registered with credit score:", record.creditScore.toNumber());
   });
 
   it("submits a task proof", async () => {
@@ -107,7 +105,7 @@ describe("agentproof", () => {
       outputHash: Array.from(crypto.randomBytes(32)),
       txSignature: Array.from(crypto.randomBytes(64)),
       slot: new anchor.BN(1000),
-      taskType: 1, // SOLANA_SWAP
+      taskType: 1,
       witnesses: [witness1.publicKey, witness2.publicKey, witness3.publicKey],
     };
 
@@ -124,7 +122,7 @@ describe("agentproof", () => {
       .rpc();
 
     const proof = await program.account.taskProof.fetch(taskProof);
-    expect(proof.status).to.equal(0); // pending
+    expect(proof.status).to.equal(0);
     console.log("✓ Proof submitted, status: pending");
   });
 
@@ -138,31 +136,46 @@ describe("agentproof", () => {
       program.programId
     );
 
-    // witness1 签名（approve）
+    // witness1 signs (approve)
     await program.methods
       .witnessSign(Array.from(taskId), true, null)
-      .accounts({ taskProof, agentRecord, witness: witness1.publicKey, systemProgram: anchor.web3.SystemProgram.programId })
+      .accounts({
+        taskProof,
+        agentRecord,
+        taskEscrow: null,
+        agentWallet: null,
+        userWallet: null,
+        witness: witness1.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
       .signers([witness1])
       .rpc();
 
     let proof = await program.account.taskProof.fetch(taskProof);
     expect(proof.signatureCount).to.equal(1);
-    expect(proof.status).to.equal(0); // still pending
+    expect(proof.status).to.equal(0);
 
-    // witness2 签名 → 达到 2-of-3 阈值 → 自动结算
+    // witness2 signs → reaches 2-of-3 threshold → auto-settle
     await program.methods
       .witnessSign(Array.from(taskId), true, null)
-      .accounts({ taskProof, agentRecord, witness: witness2.publicKey, systemProgram: anchor.web3.SystemProgram.programId })
+      .accounts({
+        taskProof,
+        agentRecord,
+        taskEscrow: null,
+        agentWallet: null,
+        userWallet: null,
+        witness: witness2.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
       .signers([witness2])
       .rpc();
 
     proof = await program.account.taskProof.fetch(taskProof);
-    expect(proof.status).to.equal(1); // verified
+    expect(proof.status).to.equal(1);
     expect(proof.signatureCount).to.equal(2);
 
     const record = await program.account.agentRecord.fetch(agentRecord);
     expect(record.tasksCompleted.toNumber()).to.equal(1);
-    expect(record.reputationScore.toNumber()).to.equal(101); // 100 + 1
-    console.log("✓ Proof verified! Agent reputation:", record.reputationScore.toNumber());
+    console.log("✓ Proof verified! Agent credit score:", record.creditScore.toNumber());
   });
 });

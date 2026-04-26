@@ -2,17 +2,21 @@
 seeds = true
 skip-lint = false
 
+[toolchain]
+anchor_version = "0.31.1"
+solana_version = "3.1.13"
+
 [programs.localnet]
-agentproof = "AgPr111111111111111111111111111111111111111"
+agentproof = "GdJFUktyh4SFxDfqeFE33KvXf5u6TMrDzmMs5Je2NKjG"
 
 [programs.devnet]
-agentproof = "AgPr111111111111111111111111111111111111111"
+agentproof = "GdJFUktyh4SFxDfqeFE33KvXf5u6TMrDzmMs5Je2NKjG"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Devnet"
+cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

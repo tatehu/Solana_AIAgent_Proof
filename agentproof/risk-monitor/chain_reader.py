@@ -57,13 +57,35 @@ class ChainTaskProof:
 
 
 def _parse_agent_record(data: bytes) -> Optional[ChainAgentRecord]:
-    """解析 AgentRecord 链上数据（跳过 8 字节 discriminator）"""
+    """解析 AgentRecord 链上数据（跳过 8 字节 discriminator）
+
+    Layout (Anchor account, little-endian):
+      8  discriminator
+      32 agent_pubkey
+      32 capability_hash
+      8  staked_lamports   (u64)
+      8  credit_score      (u64) — formerly reputation_score
+      8  safety_index      (u64) — added in new layout (132+ bytes total)
+      8  tasks_completed   (u64)
+      8  tasks_failed      (u64)
+      2  success_rate_bps  (u16)
+      1  is_frozen         (bool)
+      8  registered_at     (i64)
+      8  last_active_at    (i64)
+      1  bump              (u8)
+    Old accounts (124 bytes) lack safety_index; new accounts are 133 bytes.
+    """
     try:
         off = 8
         agent_pubkey = base58.b58encode(data[off:off+32]).decode(); off += 32
         off += 32  # capability_hash
-        staked_lamports,  = struct.unpack_from("<Q", data, off); off += 8
-        reputation_score, = struct.unpack_from("<Q", data, off); off += 8
+        staked_lamports, = struct.unpack_from("<Q", data, off); off += 8
+        reputation_score, = struct.unpack_from("<Q", data, off); off += 8  # credit_score
+        # New layout includes safety_index (u64) before tasks_completed.
+        # Total account data: 8+32+32+8+8+8+8+8+2+1+8+8+1 = 133 bytes (new)
+        #                     8+32+32+8+8+8+8+2+1+8+8+1   = 124 bytes (old, no safety_index)
+        if len(data) >= 133:
+            off += 8  # skip safety_index
         tasks_completed,  = struct.unpack_from("<Q", data, off); off += 8
         tasks_failed,     = struct.unpack_from("<Q", data, off); off += 8
         success_rate_bps, = struct.unpack_from("<H", data, off); off += 2
@@ -147,6 +169,32 @@ class SolanaChainReader:
         except Exception as e:
             logger.warning(f"fetch_agent_record({agent_pubkey}): {e}")
             return None
+
+    async def fetch_all_agents(self) -> List[ChainAgentRecord]:
+        """列出链上所有已注册的 AgentRecord（用 discriminator memcmp 过滤）"""
+        try:
+            filters = [
+                MemcmpOpts(
+                    offset=0,
+                    bytes=base58.b58encode(AGENT_RECORD_DISC).decode(),
+                ),
+            ]
+            resp = await self._client.get_program_accounts(
+                self._program_id,
+                encoding="base64",
+                filters=filters,
+            )
+            agents: List[ChainAgentRecord] = []
+            for account_info in (resp.value or []):
+                raw = bytes(account_info.account.data)
+                parsed = _parse_agent_record(raw)
+                if parsed:
+                    agents.append(parsed)
+            logger.info(f"fetch_all_agents: found {len(agents)} on-chain agents")
+            return agents
+        except Exception as e:
+            logger.warning(f"fetch_all_agents failed: {e}")
+            return []
 
     async def fetch_task_proofs(self, agent_pubkey: str) -> List[ChainTaskProof]:
         """读取该 agent 的所有 TaskProof（通过 getProgramAccounts + memcmp）"""
