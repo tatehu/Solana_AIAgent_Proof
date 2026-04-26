@@ -16,5 +16,9 @@ graphify-out/
 .env.local
 *.local
 
+# Database files
+*.db
+*.sqlite
+
 # macOS
 .DS_Store
