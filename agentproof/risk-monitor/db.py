@@ -56,7 +56,7 @@ async def init_db() -> None:
         """)
         await db.commit()
 
-    if is_new:
+    if is_new or os.getenv("SEED_ON_BOOT") == "1":
         seed_path = Path(__file__).parent / "data" / "seed.sql"
         if seed_path.exists():
             async with _get_db() as db:
