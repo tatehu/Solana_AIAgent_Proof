@@ -25,6 +25,7 @@ async def _get_db() -> AsyncIterator[aiosqlite.Connection]:
 
 
 async def init_db() -> None:
+    is_new = not _DB_PATH.exists()
     async with _get_db() as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS reputation_scores (
@@ -54,6 +55,15 @@ async def init_db() -> None:
             );
         """)
         await db.commit()
+
+    if is_new:
+        seed_path = Path(__file__).parent / "data" / "seed.sql"
+        if seed_path.exists():
+            async with _get_db() as db:
+                await db.executescript(seed_path.read_text())
+                await db.commit()
+            logger.info("Seeded database from seed.sql")
+
     logger.info(f"Database initialised at {_DB_PATH}")
 
 
