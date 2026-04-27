@@ -444,26 +444,47 @@ export default function AgentDetailPage() {
       )}
 
       {/* ── On-chain stats (only shown when agent has on-chain record) ── */}
-      {agent && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {[
-            { label: "Credit Score", value: String(agent.credit_score), unit: "/ 100", color: "text-violet-400" },
-            { label: "Safety Index", value: String(agent.safety_index), unit: "/ 100", color: "text-blue-400" },
-            { label: "Staked", value: stakedSOL, unit: "SOL", color: "text-emerald-400" },
-            { label: "Tasks Done", value: String(agent.tasks_completed), unit: "", color: "text-white" },
-            { label: "Tasks Failed", value: String(agent.tasks_failed), unit: "", color: agent.tasks_failed > 0 ? "text-rose-400" : "text-white" },
-            { label: "Success Rate", value: agent.success_rate.toFixed(1), unit: "%", color: "text-white" },
-          ].map(({ label, value, unit, color }) => (
-            <div key={label} className="glass-card rounded-2xl p-4">
-              <div className="text-xs text-slate-500 mb-1">{label}</div>
-              <div className={`text-2xl font-extrabold ${color}`}>
-                {value}
-                {unit && <span className="text-sm font-normal text-slate-500 ml-1">{unit}</span>}
+      {agent && (() => {
+        const localVerified = proofs.filter((p) => p.source === "local" && p.status === 1).length;
+        const localRejected = proofs.filter((p) => p.source === "local" && p.status === 2).length;
+        const totalDone = agent.tasks_completed + localVerified;
+        const totalFailed = agent.tasks_failed + localRejected;
+        const totalAttempted = totalDone + totalFailed;
+        const localSuccessRate = totalAttempted > 0 ? ((totalDone / totalAttempted) * 100).toFixed(1) : agent.success_rate.toFixed(1);
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {[
+              { label: "Credit Score", value: String(agent.credit_score), unit: "/ 100", color: "text-violet-400", sub: null },
+              { label: "Safety Index", value: String(agent.safety_index), unit: "/ 100", color: "text-blue-400", sub: null },
+              { label: "Staked", value: stakedSOL, unit: "SOL", color: "text-emerald-400", sub: null },
+              {
+                label: "Tasks Done",
+                value: String(totalDone),
+                unit: "",
+                color: "text-white",
+                sub: localVerified > 0 ? `${agent.tasks_completed} on-chain + ${localVerified} local` : null,
+              },
+              {
+                label: "Tasks Failed",
+                value: String(totalFailed),
+                unit: "",
+                color: totalFailed > 0 ? "text-rose-400" : "text-white",
+                sub: localRejected > 0 ? `${agent.tasks_failed} on-chain + ${localRejected} local` : null,
+              },
+              { label: "Success Rate", value: localSuccessRate, unit: "%", color: "text-white", sub: null },
+            ].map(({ label, value, unit, color, sub }) => (
+              <div key={label} className="glass-card rounded-2xl p-4">
+                <div className="text-xs text-slate-500 mb-1">{label}</div>
+                <div className={`text-2xl font-extrabold ${color}`}>
+                  {value}
+                  {unit && <span className="text-sm font-normal text-slate-500 ml-1">{unit}</span>}
+                </div>
+                {sub && <div className="text-xs text-slate-600 mt-1">{sub}</div>}
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        );
+      })()}
 
       {/* [DISABLED] Manifest-only badge (no on-chain record) — metaplex-sourced agents hidden */}
       {/* {!agent && (manifest || reputation) && (
@@ -556,11 +577,23 @@ export default function AgentDetailPage() {
 
       {/* ── TaskProof History ── */}
       <div className="glass-card rounded-2xl p-6">
-        <h2 className="font-semibold text-lg mb-5 flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-5 flex-wrap">
           <Activity className="h-5 w-5 text-violet-400" />
-          TaskProof History
-          <span className="text-sm font-normal text-slate-500 ml-1">({proofs.length})</span>
-        </h2>
+          <h2 className="font-semibold text-lg">TaskProof History</h2>
+          <span className="text-sm font-normal text-slate-500">({proofs.length})</span>
+          {proofs.length > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-lg">
+                {proofs.filter((p) => p.status === 1).length} verified
+              </span>
+              {proofs.filter((p) => p.status === 2).length > 0 && (
+                <span className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 px-2.5 py-0.5 rounded-lg">
+                  {proofs.filter((p) => p.status === 2).length} rejected
+                </span>
+              )}
+            </div>
+          )}
+        </div>
         {proofs.length === 0 ? (
           <div className="text-slate-500 text-sm text-center py-10">
             No TaskProofs found for this agent.
