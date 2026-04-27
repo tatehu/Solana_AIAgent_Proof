@@ -364,7 +364,7 @@ export default function VerifyPage() {
         </button>
 
         {/* ── Chain proof result ── */}
-        {chainProof?.status === "submitted" && (
+        {!loading && chainProof?.status === "submitted" && (
           <div className="rounded-2xl p-4 border text-sm bg-blue-500/10 border-blue-500/20">
             <div className="flex items-center gap-2 font-semibold text-blue-400 mb-2">
               <LinkIcon className="h-4 w-4" />
@@ -384,8 +384,8 @@ export default function VerifyPage() {
           </div>
         )}
 
-        {/* Only show chain error when witness verification also failed or is absent */}
-        {chainProof?.status === "error" && (!result || result.status !== "verified") && (
+        {/* Only show chain error when verification is done and witness verification also failed */}
+        {!loading && chainProof?.status === "error" && (!result || result.status !== "verified") && (
           <div className="rounded-2xl p-4 border text-sm bg-rose-500/10 border-rose-500/20">
             <div className="flex items-start gap-2 text-rose-400">
               <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
