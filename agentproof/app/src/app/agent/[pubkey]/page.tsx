@@ -22,6 +22,7 @@ import { TASK_TYPES } from "@/lib/task-types";
 import { ScoreBadge } from "@/components/ScoreBadge";
 import { ScoreTrendChart } from "@/components/ScoreTrendChart";
 import { InsuranceModal } from "@/components/InsuranceModal";
+import { getProofsByAgent } from "@/lib/proof-store";
 
 interface AgentManifest {
   name: string;
@@ -184,6 +185,32 @@ const STATUS_COLOR: Record<number, string> = {
   2: "text-rose-400 bg-rose-500/15 border-rose-500/30",
 };
 
+/** Unified proof entry for display — merges on-chain PDAs and localStorage records. */
+interface DisplayProof {
+  task_id: string;
+  tx_signature: string;
+  slot: number;
+  task_type: string;
+  status: 0 | 1 | 2; // 0=pending, 1=verified, 2=rejected
+  submitted_at: number;
+  signature_count: number;
+  source: "chain" | "local";
+}
+
+function taskProofToDisplay(p: TaskProof): DisplayProof {
+  const taskTypeKey = Object.keys({ SOLANA_SWAP: 1, DATA_ANALYSIS: 2, REPORT_GENERATION: 3, DEFI_OPERATION: 4, CUSTOM: 5 })[p.task_type - 1] ?? "CUSTOM";
+  return {
+    task_id: p.task_id,
+    tx_signature: p.tx_signature,
+    slot: p.slot,
+    task_type: taskTypeKey,
+    status: p.status,
+    submitted_at: p.submitted_at,
+    signature_count: p.signature_count,
+    source: "chain",
+  };
+}
+
 const SCORE_DIMENSIONS = [
   { key: "behavior_safety" as const, label: "Behavior Safety", max: 35, color: "from-emerald-500 to-teal-500" },
   { key: "completion_rate" as const, label: "Completion Rate", max: 25, color: "from-blue-500 to-cyan-500" },
@@ -196,7 +223,7 @@ export default function AgentDetailPage() {
   const { pubkey } = useParams<{ pubkey: string }>();
   const [agent, setAgent] = useState<(AgentInfo & { capability_hash?: string }) | null>(null);
   const [manifest, setManifest] = useState<AgentManifest | null>(null);
-  const [proofs, setProofs] = useState<TaskProof[]>([]);
+  const [proofs, setProofs] = useState<DisplayProof[]>([]);
   const [risk, setRisk] = useState<RiskScore | null>(null);
   const [reputation, setReputation] = useState<ReputationScore | null>(null);
   const [scoreHistory, setScoreHistory] = useState<ScoreHistoryPoint[]>([]);
@@ -215,9 +242,28 @@ export default function AgentDetailPage() {
       fetchReputationScore(pubkey),
       fetchScoreHistory(pubkey),
     ])
-      .then(([a, p, r, m, rep, hist]) => {
+      .then(([a, chainProofs, r, m, rep, hist]) => {
         setAgent(a);
-        setProofs(p);
+
+        // Merge on-chain PDAs with localStorage records, deduped by task_id
+        const localRecords = getProofsByAgent(pubkey);
+        const chainDisplay = chainProofs.map(taskProofToDisplay);
+        const chainIds = new Set(chainDisplay.map((p) => p.task_id));
+        const localDisplay: DisplayProof[] = localRecords
+          .filter((lr) => !chainIds.has(lr.task_id))
+          .map((lr) => ({
+            task_id: lr.task_id,
+            tx_signature: lr.tx_signature,
+            slot: lr.slot,
+            task_type: lr.task_type,
+            status: lr.status === "verified" ? 1 : lr.status === "rejected" ? 2 : 0,
+            submitted_at: lr.submitted_at,
+            signature_count: lr.witness_count,
+            source: "local" as const,
+          }));
+        const merged = [...chainDisplay, ...localDisplay].sort((a, b) => b.submitted_at - a.submitted_at);
+        setProofs(merged);
+
         setRisk(r);
         setManifest(m);
         setReputation(rep);
@@ -517,64 +563,71 @@ export default function AgentDetailPage() {
         </h2>
         {proofs.length === 0 ? (
           <div className="text-slate-500 text-sm text-center py-10">
-            No TaskProofs found on-chain for this agent.
+            No TaskProofs found for this agent.
           </div>
         ) : (
           <div className="space-y-3">
-            {proofs.map((proof) => (
-              <div
-                key={proof.task_id}
-                className="rounded-xl border border-white/8 p-4 hover:border-white/15 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className={`text-xs px-2.5 py-0.5 rounded-lg border font-semibold ${STATUS_COLOR[proof.status]}`}>
-                        {proof.status === 1 ? <CheckCircle className="h-3 w-3 inline mr-1" /> :
-                         proof.status === 2 ? <AlertTriangle className="h-3 w-3 inline mr-1" /> :
-                         <Clock className="h-3 w-3 inline mr-1" />}
-                        {STATUS_LABEL[proof.status]}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        {proof.signature_count}/3 signatures
-                      </span>
+            {proofs.map((proof) => {
+              const taskLabel = TASK_TYPES.find((t) => t.value === proof.task_type)?.label ?? proof.task_type;
+              return (
+                <div
+                  key={proof.task_id}
+                  className="rounded-xl border border-white/8 p-4 hover:border-white/15 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                        <span className={`text-xs px-2.5 py-0.5 rounded-lg border font-semibold ${STATUS_COLOR[proof.status]}`}>
+                          {proof.status === 1 ? <CheckCircle className="h-3 w-3 inline mr-1" /> :
+                           proof.status === 2 ? <AlertTriangle className="h-3 w-3 inline mr-1" /> :
+                           <Clock className="h-3 w-3 inline mr-1" />}
+                          {STATUS_LABEL[proof.status]}
+                        </span>
+                        <span className="text-xs text-slate-500">
+                          {proof.signature_count}/3 witnesses
+                        </span>
+                        <span className="text-xs text-slate-600 bg-white/5 px-2 py-0.5 rounded-lg">
+                          {taskLabel}
+                        </span>
+                        {proof.source === "local" && (
+                          <span className="text-xs text-violet-400 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-lg">
+                            local
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-1 text-xs text-slate-400 font-mono">
+                        <div className="flex gap-2">
+                          <span className="text-slate-600 w-16 shrink-0">task_id</span>
+                          <span className="text-slate-300 truncate">{proof.task_id.slice(0, 40)}...</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <span className="text-slate-600 w-16 shrink-0">tx_sig</span>
+                          <span className="text-slate-300 truncate">{proof.tx_signature.slice(0, 40)}...</span>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="space-y-1 text-xs text-slate-400 font-mono">
-                      <div className="flex gap-2">
-                        <span className="text-slate-600 w-16 shrink-0">task_id</span>
-                        <span className="text-slate-300 truncate">{proof.task_id.slice(0, 40)}...</span>
+                    <div className="text-right shrink-0 space-y-1">
+                      <div className="text-xs text-slate-500">slot {proof.slot.toLocaleString()}</div>
+                      <div className="text-xs text-slate-500">
+                        {proof.submitted_at > 0
+                          ? new Date(proof.submitted_at * 1000).toLocaleString()
+                          : "—"}
                       </div>
-                      <div className="flex gap-2">
-                        <span className="text-slate-600 w-16 shrink-0">output</span>
-                        <span className="text-slate-300 truncate">{proof.output_hash.slice(0, 40)}...</span>
-                      </div>
-                      <div className="flex gap-2">
-                        <span className="text-slate-600 w-16 shrink-0">input</span>
-                        <span className="text-slate-300 truncate">{proof.input_hash.slice(0, 40)}...</span>
-                      </div>
+                      <a
+                        href={`https://explorer.solana.com/address/${pubkey}?cluster=devnet`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                      >
+                        Explorer <ExternalLink className="h-3 w-3" />
+                      </a>
                     </div>
-                  </div>
-
-                  <div className="text-right shrink-0 space-y-1">
-                    <div className="text-xs text-slate-500">slot {proof.slot.toLocaleString()}</div>
-                    <div className="text-xs text-slate-500">
-                      {proof.submitted_at > 0
-                        ? new Date(proof.submitted_at * 1000).toLocaleString()
-                        : "—"}
-                    </div>
-                    <a
-                      href={`https://explorer.solana.com/address/${pubkey}?cluster=devnet`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 transition-colors"
-                    >
-                      Explorer <ExternalLink className="h-3 w-3" />
-                    </a>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

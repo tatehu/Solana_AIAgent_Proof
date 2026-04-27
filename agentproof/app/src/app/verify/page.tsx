@@ -10,6 +10,7 @@ import {
 import { agentProof } from "@/lib/agentproof-sdk";
 import type { ProofResult } from "@/lib/agentproof-sdk";
 import { PROGRAM_ID, WITNESS_NODE_URL } from "@/lib/solana";
+import { saveProof } from "@/lib/proof-store";
 import { TASK_TYPES } from "@/lib/task-types";
 import { CheckCircle, XCircle, Link as LinkIcon, AlertTriangle, Loader2, Shield, Cpu, GitMerge } from "lucide-react";
 
@@ -231,6 +232,18 @@ export default function VerifyPage() {
         slot: slotNum,
       });
       setResult(proof);
+
+      saveProof({
+        task_id: taskId,
+        agent_pubkey: agentPubkey,
+        tx_signature: txSig,
+        task_type: taskType,
+        slot: slotNum,
+        status: proof.status === "verified" ? "verified" : "rejected",
+        submitted_at: Math.floor(Date.now() / 1000),
+        chain_tx: chainProof?.status === "submitted" ? chainProof.txSig : undefined,
+        witness_count: proof.signatures.length,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Verification failed";
       setError(msg);
@@ -351,36 +364,33 @@ export default function VerifyPage() {
         </button>
 
         {/* ── Chain proof result ── */}
-        {chainProof && (
-          <div className={`rounded-2xl p-4 border text-sm ${
-            chainProof.status === "submitted"
-              ? "bg-blue-500/10 border-blue-500/20"
-              : "bg-amber-500/10 border-amber-500/20"
-          }`}>
-            {chainProof.status === "submitted" ? (
-              <>
-                <div className="flex items-center gap-2 font-semibold text-blue-400 mb-2">
-                  <LinkIcon className="h-4 w-4" />
-                  Proof submitted on-chain
-                </div>
-                <a
-                  href={`https://explorer.solana.com/tx/${chainProof.txSig}?cluster=devnet`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-blue-400 hover:text-blue-300 underline block mb-1"
-                >
-                  View submit_proof tx →
-                </a>
-                <div className="text-xs text-slate-500">
-                  Witness nodes will call witness_sign × 3 (2-of-3 threshold → auto-settle)
-                </div>
-              </>
-            ) : (
-              <div className="flex items-start gap-2 text-amber-400">
-                <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
-                On-chain submit skipped: {chainProof.error}
-              </div>
-            )}
+        {chainProof?.status === "submitted" && (
+          <div className="rounded-2xl p-4 border text-sm bg-blue-500/10 border-blue-500/20">
+            <div className="flex items-center gap-2 font-semibold text-blue-400 mb-2">
+              <LinkIcon className="h-4 w-4" />
+              Proof submitted on-chain
+            </div>
+            <a
+              href={`https://explorer.solana.com/tx/${chainProof.txSig}?cluster=devnet`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-blue-400 hover:text-blue-300 underline block mb-1"
+            >
+              View submit_proof tx →
+            </a>
+            <div className="text-xs text-slate-500">
+              Witness nodes will call witness_sign × 3 (2-of-3 threshold → auto-settle)
+            </div>
+          </div>
+        )}
+
+        {/* Only show chain error when witness verification also failed or is absent */}
+        {chainProof?.status === "error" && (!result || result.status !== "verified") && (
+          <div className="rounded-2xl p-4 border text-sm bg-rose-500/10 border-rose-500/20">
+            <div className="flex items-start gap-2 text-rose-400">
+              <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+              On-chain submit failed: {chainProof.error}
+            </div>
           </div>
         )}
 
